@@ -58,7 +58,7 @@ uvx orm-lens migration-risk  # migrations that lock tables or fail on existing r
 |---|---|---|
 | **编辑器用户** —— VS Code / Cursor / Windsurf / VSCodium | `code --install-extension frowningdev.django-orm-lens` | 侧边栏树形视图、实时 ER 图、悬停卡片、16 条 QuickFix 规则 |
 | **终端 / CI 用户** | `pip install orm-lens` | 13 个子命令、SARIF + PR 注解、pre-commit 钩子、一个 GitHub Action |
-| **AI agent 用户** —— Cursor / Claude Code / Aider / Zed / Continue | `pip install "orm-lens[mcp]"` | 10 个只读 MCP 工具，基于确凿事实回答数据结构问题 |
+| **AI agent 用户** —— Cursor / Claude Code / Aider / Zed / Continue | `pip install "orm-lens[mcp]"` | 14 个只读 MCP 工具，基于确凿事实回答数据结构问题 |
 
 MCP 配置只需一段 JSON —— 参见 [Integrations](#-integrations)。将 `ORM_LENS_ROOT` 指向你的 Django 项目的绝对路径。
 

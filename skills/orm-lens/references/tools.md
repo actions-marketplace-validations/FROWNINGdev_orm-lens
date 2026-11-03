@@ -25,6 +25,7 @@ Contents: 1. MCP tools · 2. CLI commands · 3. Installing the MCP server ·
 | `suggest_indexes` | `app_label`, `model_name` | field-usage frequency from filter/exclude/get/order_by, proposed `Meta.indexes` |
 | `signal_graph` | — | sender → signal → handler graph, send-sites, orphan handlers |
 | `nplusone_scan` | — | N+1 findings: `file`, `line`, `loop_var`, `queryset_var`, `accessed`, `suggested_fix`, `confidence` |
+| `migration_risk` | `severity`: `critical` (default), `warning`, `info`, `all` | risky operations in Django migrations and Alembic revisions, same shape as `migration-risk --format json` (py-1.17.0+) |
 | `blast_radius` | `severity`: `critical` (default), `warning`, `info`, `all` | per destructive operation: risks, references by layer with certainty, cascade |
 | `drift` | — | per model: fields declared but never migrated, fields migrated but no longer declared, `blocking` flag |
 | `impact` | `name` (field or model name) | references grouped by layer, each `certain` / `likely` / `possibly` |

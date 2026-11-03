@@ -60,7 +60,7 @@ Cold clone, broken venv, no settings module — you still see every app and mode
 |---|---|---|
 | **Editor user** (Django) — VS Code / Cursor / Windsurf / VSCodium | `code --install-extension frowningdev.django-orm-lens` | Field autocomplete in `.filter()`, sidebar tree, live ER diagram, hover cards, 18 lint rules with QuickFixes |
 | **Terminal / CI user** | `pip install orm-lens` | 17 subcommands, SARIF + PR annotations, pre-commit hooks, a GitHub Action |
-| **AI-agent user** — Cursor / Claude Code / Aider / Zed / Continue | `pip install "orm-lens[mcp]"` | 13 read-only MCP tools answering schema questions from ground truth |
+| **AI-agent user** — Cursor / Claude Code / Aider / Zed / Continue | `pip install "orm-lens[mcp]"` | 14 read-only MCP tools answering schema questions from ground truth |
 
 MCP setup is one JSON block — see [Integrations](#-integrations). Point `ORM_LENS_ROOT` at your project's absolute path.
 
@@ -426,7 +426,7 @@ orm-lens stats-sql                    # read-only SQL for --stats
 
 > `impact`, `blast-radius`, `drift` and `stats-sql` ship in **py-1.7.0** and later.
 
-> **Alembic (preview):** `migration-risk` also checks Alembic revisions — NOT NULL without `server_default`, indexes without `CONCURRENTLY`, multiple heads and [eight more rules](docs/rules/alembic.md) — so SQLAlchemy projects without Django (FastAPI, Flask) get the same static migration review.
+> **Alembic (preview):** `migration-risk` also checks Alembic revisions — NOT NULL without `server_default`, indexes without `CONCURRENTLY`, multiple heads and [nine more rules](docs/rules/alembic.md) — so SQLAlchemy projects without Django (FastAPI, Flask) get the same static migration review.
 
 > **Django 6.1:** `on_delete=models.DB_CASCADE` deletes child rows in the database, so their `post_delete` handlers never run. Since **py-1.13.8**, `cascade` names the handlers each `DB_CASCADE` relation skips — [why that matters and what to do](docs/articles/django-6-1-db-cascade-signals.md).
 
@@ -434,7 +434,7 @@ Every command accepts `--path <dir>` and `--exclude <glob>`. `nplusone` / `migra
 
 ### MCP server
 
-Register it once with your agent and it exposes thirteen read-only tools:
+Register it once with your agent and it exposes fourteen read-only tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -447,6 +447,7 @@ Register it once with your agent and it exposes thirteen read-only tools:
 | `describe_migration_dependency` | Per-app migration DAG: roots, leaves, cross-app deps |
 | `suggest_indexes` | `Meta.indexes` proposals from observed QuerySet usage |
 | `signal_graph` | Sender→signal→handler graph from `@receiver` decorators and `signal.connect()` calls |
+| `migration_risk` | Dangerous schema changes in Django migrations & Alembic revisions (table locks, dropped columns) |
 | `blast_radius` | What a destructive migration hits: its risks, the code still reading it, the cascade fallout |
 | `drift` | `makemigrations --check` without booting Django — migrations diffed against `models.py` |
 | `impact` | Every reference to a field or model name, grouped by Django layer |
@@ -792,7 +793,7 @@ Open the command palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and type "ORM Lens":
 - [x] `impact <name>` — what still references a model or field, grouped by Django layer
 - [x] `blast-radius --stats` + `stats-sql` — optional production row counts from read-only SQL you run yourself (the tool never holds a DB credential)
 - [x] `nplusone` resolves across functions — a queryset returned by a helper is followed into the loop that consumes it
-- [x] `blast_radius`, `drift` and `impact` exposed as MCP tools — thirteen tools for AI agents
+- [x] `blast_radius`, `drift`, `impact` and `migration_risk` exposed as MCP tools — fourteen tools for AI agents
 - [x] `drift` documents its `!!` / `~` marks in the report and in `--help` — reported by [@sevdog](https://github.com/sevdog) ([#57](https://github.com/FROWNINGdev/orm-lens/issues/57))
 - [x] `drift` follows inheritance from abstract bases — an abstract base's fields count as the concrete child's own, as Django treats them — reported by [@sevdog](https://github.com/sevdog) ([#58](https://github.com/FROWNINGdev/orm-lens/issues/58))
 - [x] `suggest-index` recognises the indexes Django already made — primary key (`pk` and `id` are one lookup), `db_index`, `unique`, foreign keys, `unique_together`, `UniqueConstraint` — reported by [@sevdog](https://github.com/sevdog) ([#60](https://github.com/FROWNINGdev/orm-lens/issues/60)), same cause independently found by [@RinZ27](https://github.com/RinZ27) ([#61](https://github.com/FROWNINGdev/orm-lens/pull/61))

@@ -224,7 +224,7 @@ _SQLALCHEMY_DEP_FILES: tuple[str, ...] = (
     "setup.py",
     "Pipfile",
 )
-_SQLALCHEMY_DEP_RE = re.compile(r"(?i)\b(?:sqlalchemy|sqlmodel|flask[-_]sqlalchemy)\b")
+_SQLALCHEMY_DEP_RE = re.compile(r"(?i)\b(?:sqlalchemy|sqlmodel|flask[-_]sqlalchemy|alembic|tool\.alembic)\b")
 
 
 def _has_sqlalchemy_marker(p: Path) -> bool:

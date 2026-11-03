@@ -60,6 +60,7 @@ from orm_lens.mcp_server import (
     _tool_find_relations,
     _tool_list_apps,
     _tool_list_models,
+    _tool_migration_risk,
     _tool_nplusone_scan,
     _tool_signal_graph,
     _tool_suggest_indexes,
@@ -105,6 +106,7 @@ class ToolsRegistryTest(unittest.TestCase):
             "suggest_indexes",
             "signal_graph",
             "nplusone_scan",
+            "migration_risk",
             "blast_radius",
             "drift",
             "impact",
@@ -275,6 +277,52 @@ class HappyPathTest(unittest.TestCase):
         self.assertEqual(len(payload), 1)
         self.assertEqual(payload[0]["name"], "myapp")
         self.assertEqual(payload[0]["models"], 2)
+
+    def test_migration_risk_rejects_an_unknown_severity(self) -> None:
+        payload = json.loads(
+            _tool_migration_risk({"workspace_root": str(self.tmp), "severity": "high"})
+        )
+        self.assertEqual(payload["error"], "INVALID_SEVERITY")
+        self.assertIn("critical", payload["hint"])
+        self.assertNotIn("findings", payload)
+
+    def test_migration_risk_accepts_every_documented_severity(self) -> None:
+        for severity in ("critical", "warning", "info", "all"):
+            with self.subTest(severity=severity):
+                payload = json.loads(
+                    _tool_migration_risk(
+                        {"workspace_root": str(self.tmp), "severity": severity}
+                    )
+                )
+                self.assertIn("findings", payload)
+
+    def test_migration_risk_detects_alembic_not_null_without_server_default(self) -> None:
+        versions = self.tmp / "alembic" / "versions"
+        versions.mkdir(parents=True, exist_ok=True)
+        header = (
+            "import sqlalchemy as sa\n"
+            "from alembic import op\n\n"
+            'revision = "{rev}"\n'
+            "down_revision = {down}\n"
+            "branch_labels = None\n\n\n"
+            "def upgrade():\n"
+        )
+        (versions / "aaa_init.py").write_text(
+            header.format(rev="aaa", down="None") + "    op.create_table('users', sa.Column('id', sa.Integer()))\n"
+        )
+        (versions / "bbb_add_col.py").write_text(
+            header.format(rev="bbb", down='"aaa"') + "    op.add_column('users', sa.Column('email', sa.String(), nullable=False))\n"
+        )
+        payload = json.loads(
+            _tool_migration_risk({"workspace_root": str(self.tmp), "severity": "critical"})
+        )
+        self.assertIn("findings", payload)
+        findings = payload["findings"]
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["severity"], "critical")
+        self.assertEqual(findings[0]["operation"], "add_column")
+        self.assertEqual(findings[0]["model"], "users")
+        self.assertEqual(findings[0]["field"], "email")
 
     def test_blast_radius_rejects_an_unknown_severity(self) -> None:
         # "high" used to fall back to critical silently (#140).

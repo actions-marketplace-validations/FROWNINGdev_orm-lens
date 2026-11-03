@@ -7,7 +7,7 @@
 name: "@FROWNINGdev/orm-lens"
 version: "1.16.0"
 description: >-
-  Django and SQLAlchemy static-analysis MCP. 13 read-only tools that expose
+  Django and SQLAlchemy static-analysis MCP. 14 read-only tools that expose
   the schema, relationships (FK / M2M / O2O, on_delete, related_name), the
   migration DAG, missing-index heuristics, signal graphs and N+1 loops.
   No DB, no app boot, no credentials.

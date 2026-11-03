@@ -58,7 +58,7 @@ Un clon en frío, un venv roto, sin módulo de settings — aun así ves cada ap
 |---|---|---|
 | **Usuario de editor** — VS Code / Cursor / Windsurf / VSCodium | `code --install-extension frowningdev.django-orm-lens` | Árbol lateral, diagrama ER en vivo, tarjetas de hover, 16 reglas QuickFix |
 | **Usuario de terminal / CI** | `pip install orm-lens` | 13 subcomandos, SARIF + anotaciones en PRs, hooks de pre-commit, una GitHub Action |
-| **Usuario de agentes de IA** — Cursor / Claude Code / Aider / Zed / Continue | `pip install "orm-lens[mcp]"` | 10 herramientas MCP de solo lectura que responden preguntas sobre el esquema desde la fuente de verdad |
+| **Usuario de agentes de IA** — Cursor / Claude Code / Aider / Zed / Continue | `pip install "orm-lens[mcp]"` | 14 herramientas MCP de solo lectura que responden preguntas sobre el esquema desde la fuente de verdad |
 
 La configuración de MCP es un solo bloque JSON — consulta [Integraciones](#-integrations). Apunta `ORM_LENS_ROOT` a la ruta absoluta de tu proyecto Django.
 

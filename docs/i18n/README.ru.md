@@ -58,7 +58,7 @@ uvx orm-lens migration-risk  # migrations that lock tables or fail on existing r
 |---|---|---|
 | **Пользователь редактора** — VS Code / Cursor / Windsurf / VSCodium | `code --install-extension frowningdev.django-orm-lens` | Дерево в боковой панели, живая ER-диаграмма, hover-карточки, 16 QuickFix-правил |
 | **Пользователь терминала / CI** | `pip install orm-lens` | 13 подкоманд, SARIF + PR-аннотации, pre-commit-хуки, GitHub Action |
-| **Пользователь AI-агентов** — Cursor / Claude Code / Aider / Zed / Continue | `pip install "orm-lens[mcp]"` | 13 read-only MCP-инструментов, отвечающих на вопросы о схеме на основе ground truth |
+| **Пользователь AI-агентов** — Cursor / Claude Code / Aider / Zed / Continue | `pip install "orm-lens[mcp]"` | 14 read-only MCP-инструментов, отвечающих на вопросы о схеме на основе ground truth |
 
 Настройка MCP — один JSON-блок, см. [Интеграции](#-интеграции). Укажите в `ORM_LENS_ROOT` абсолютный путь к вашему Django-проекту.
 

@@ -205,6 +205,17 @@ class ResolveWorkspaceTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.addCleanup(_env_restore, self._env)
 
+    def test_alembic_in_pyproject_is_recognized_as_valid_workspace(self) -> None:
+        alembic_ws = Path(tempfile.mkdtemp(prefix="djol-alembic-"))
+        self.addCleanup(shutil.rmtree, alembic_ws, ignore_errors=True)
+        (alembic_ws / "pyproject.toml").write_text(
+            "[tool.alembic]\nscript_location = 'alembic'\n",
+            encoding="utf-8",
+        )
+        result = resolve_workspace(str(alembic_ws))
+        self.assertNotIsInstance(result, WorkspaceError)
+        self.assertEqual(result, alembic_ws.resolve())
+
     def test_explicit_argument_wins(self) -> None:
         os.environ["ORM_LENS_ROOT"] = str(self.tmp / "does-not-exist")
         result = resolve_workspace(str(self.tmp))

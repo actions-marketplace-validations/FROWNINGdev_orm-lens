@@ -1,6 +1,6 @@
 """MCP (Model Context Protocol) stdio server for ORM Lens.
 
-Exposes thirteen read-only tools that any MCP-compatible AI agent can call:
+Exposes fourteen read-only tools that any MCP-compatible AI agent can call:
 
 * ``list_apps``       — list Django apps with model counts
 * ``list_models``    — flat ``app.Model`` list, optional app filter
@@ -12,6 +12,7 @@ Exposes thirteen read-only tools that any MCP-compatible AI agent can call:
 * ``suggest_indexes`` — proposed ``Meta.indexes`` from workspace QuerySet usage
 * ``signal_graph``   — sender→signal→handler DAG from ``@receiver`` and ``.connect()``
 * ``nplusone_scan``  — static N+1 findings for the whole workspace
+* ``migration_risk`` — dangerous schema changes in Django migrations & Alembic revisions
 
 The ``mcp`` runtime package is loaded lazily so ``pip install orm-lens``
 stays zero-dep. Install with the extras: ``pip install 'orm-lens[mcp]'``.
@@ -311,6 +312,36 @@ def _tool_nplusone_scan(args: dict[str, Any]) -> str:
 
 
 
+def _tool_migration_risk(args: dict[str, Any]) -> str:
+    """Analyze Django migrations and Alembic revisions for operations dangerous in production.
+
+    Static analysis across both migration systems: detects operations that lock
+    tables, drop data or break zero-downtime deploys.
+    """
+    ws = _resolve(args)
+    if isinstance(ws, WorkspaceError):
+        return _error_json(ws)
+    from .alembic_risk import analyze_alembic_risks
+    from .migrations_parser import analyze_migration_risks
+
+    severity = str(args.get("severity") or "critical")
+    rank = {"critical": 0, "warning": 1, "info": 2}
+    if severity != "all" and severity not in rank:
+        return json.dumps(
+            {
+                "error": "INVALID_SEVERITY",
+                "hint": "severity must be one of critical | warning | info | all",
+            },
+            indent=2,
+        )
+    findings = analyze_migration_risks(str(ws)) + analyze_alembic_risks(str(ws))
+    findings.sort(key=lambda r: (rank.get(r.severity, 99), r.file_path, r.line_number))
+    if severity != "all":
+        threshold = rank[severity]
+        findings = [f for f in findings if rank.get(f.severity, 99) <= threshold]
+    return json.dumps({"findings": [f.to_dict() for f in findings]}, indent=2, ensure_ascii=False)
+
+
 def _tool_blast_radius(args: dict[str, Any]) -> str:
     """What a destructive migration actually hits.
 
@@ -473,6 +504,17 @@ TOOLS: dict[str, dict[str, Any]] = {
             "the workspace. Returns sender->signal->handler DAG plus custom-"
             "signal send-sites and orphan handlers. Zero-runtime, no DB, no "
             "Django boot." + _WORKSPACE_HINT
+        ),
+    },
+    "migration_risk": {
+        "handler": _tool_migration_risk,
+        "description": (
+            "Analyze Django migrations and Alembic revisions for operations "
+            "dangerous in production (table locks, dropped columns/tables, "
+            "missing defaults on NOT NULL columns). Returns findings in the "
+            "same shape as 'migration-risk --format json'. Optional 'severity' "
+            "(critical|warning|info|all, default critical; any other value "
+            "returns INVALID_SEVERITY)." + _WORKSPACE_HINT
         ),
     },
     "blast_radius": {
@@ -746,6 +788,12 @@ def main() -> int:
             @server.tool(name=name, description=description)
             def nplusone_scan(workspace_root: str = "") -> str:
                 return handler({"workspace_root": workspace_root})
+        elif name == "migration_risk":
+            @server.tool(name=name, description=description)
+            def migration_risk(workspace_root: str = "", severity: str = "critical") -> str:
+                return handler(
+                    {"workspace_root": workspace_root, "severity": severity}
+                )
         elif name == "blast_radius":
             @server.tool(name=name, description=description)
             def blast_radius(workspace_root: str = "", severity: str = "critical") -> str:
