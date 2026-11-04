@@ -25,7 +25,7 @@ Your entire model graph — live in your editor sidebar, gating your CI, and ans
 [![Python](https://img.shields.io/pypi/pyversions/orm-lens?color=3775a9&logo=python&logoColor=white)](https://pypi.org/project/orm-lens/)
 [![Django versions](https://img.shields.io/pypi/djversions/orm-lens?color=092e20&label=Django&logo=django&logoColor=white)](https://pypi.org/project/orm-lens/)
 [![CI](https://img.shields.io/github/actions/workflow/status/FROWNINGdev/orm-lens/ci.yml?branch=main&label=CI&logo=github)](https://github.com/FROWNINGdev/orm-lens/actions/workflows/ci.yml)
-[![Downloads](https://img.shields.io/pepy/dt/django-orm-lens?color=3775a9&label=downloads&logo=pypi&logoColor=white)](https://pepy.tech/project/django-orm-lens)
+[![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FFROWNINGdev%2Form-lens%2Fbadges%2Fpypi-downloads.json)](https://pypistats.org/packages/orm-lens)
 [![License](https://img.shields.io/github/license/FROWNINGdev/orm-lens?color=16a34a)](LICENSE)
 
 <br/>
@@ -109,7 +109,7 @@ All of it is here, MIT-licensed, with no tier gate, no seat count, no account, a
 [![Forks](https://img.shields.io/github/forks/FROWNINGdev/orm-lens?style=for-the-badge&logo=github&logoColor=white&color=64748b&labelColor=1e293b)](https://github.com/FROWNINGdev/orm-lens/network/members)
 [![Contributors](https://img.shields.io/github/contributors/FROWNINGdev/orm-lens?style=for-the-badge&logo=github&logoColor=white&label=contributors&color=8b5cf6&labelColor=1e293b)](https://github.com/FROWNINGdev/orm-lens/graphs/contributors)
 [![PyPI monthly](https://img.shields.io/pypi/dm/orm-lens?style=for-the-badge&logo=pypi&logoColor=white&label=PyPI%2Fmonth&color=3775a9&labelColor=1e293b)](https://pypi.org/project/orm-lens/)
-[![Total downloads](https://img.shields.io/pepy/dt/django-orm-lens?style=for-the-badge&logo=pypi&logoColor=white&label=total%20downloads&color=3775a9&labelColor=1e293b)](https://pepy.tech/project/django-orm-lens)
+[![Total downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FFROWNINGdev%2Form-lens%2Fbadges%2Fpypi-downloads.json&style=for-the-badge&label=total%20downloads&labelColor=1e293b)](https://pypistats.org/packages/orm-lens)
 [![Open VSX downloads](https://img.shields.io/open-vsx/dt/FROWNINGdev/django-orm-lens?style=for-the-badge&logo=eclipseide&logoColor=white&label=Open%20VSX&color=c160ef&labelColor=1e293b)](https://open-vsx.org/extension/frowningdev/django-orm-lens)
 [![VS Code installs](https://vsmarketplacebadges.dev/installs-short/frowningdev.django-orm-lens.svg?style=for-the-badge&colorA=1e293b&colorB=0c4b33&label=VS%20Code%20installs)](https://marketplace.visualstudio.com/items?itemName=frowningdev.django-orm-lens)
 [![Marketplace rating](https://vsmarketplacebadges.dev/rating-star/frowningdev.django-orm-lens.svg?style=for-the-badge&colorA=1e293b&colorB=c160ef&label=rating)](https://marketplace.visualstudio.com/items?itemName=frowningdev.django-orm-lens&ssr=false#review-details)

@@ -23,7 +23,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/orm-lens?color=3775a9&logo=python&logoColor=white)](https://pypi.org/project/orm-lens/)
 [![Django versions](https://img.shields.io/pypi/djversions/orm-lens?color=092e20&label=Django&logo=django&logoColor=white)](https://pypi.org/project/orm-lens/)
 [![CI](https://img.shields.io/github/actions/workflow/status/FROWNINGdev/orm-lens/ci.yml?branch=main&label=CI&logo=github)](https://github.com/FROWNINGdev/orm-lens/actions/workflows/ci.yml)
-[![Downloads](https://img.shields.io/pepy/dt/django-orm-lens?color=3775a9&label=downloads&logo=pypi&logoColor=white)](https://pepy.tech/project/django-orm-lens)
+[![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FFROWNINGdev%2Form-lens%2Fbadges%2Fpypi-downloads.json)](https://pypistats.org/packages/orm-lens)
 [![License](https://img.shields.io/github/license/FROWNINGdev/orm-lens?color=16a34a)](../../LICENSE)
 
 <br/>
@@ -95,7 +95,7 @@ uvx orm-lens migration-risk  # migrations that lock tables or fail on existing r
 [![GitHub stars](https://img.shields.io/github/stars/FROWNINGdev/orm-lens?style=for-the-badge&logo=github&logoColor=white&color=eab308&labelColor=1e293b)](https://github.com/FROWNINGdev/orm-lens/stargazers)
 [![Forks](https://img.shields.io/github/forks/FROWNINGdev/orm-lens?style=for-the-badge&logo=github&logoColor=white&color=64748b&labelColor=1e293b)](https://github.com/FROWNINGdev/orm-lens/network/members)
 [![PyPI monthly](https://img.shields.io/pypi/dm/orm-lens?style=for-the-badge&logo=pypi&logoColor=white&label=PyPI%2Fmonth&color=3775a9&labelColor=1e293b)](https://pypi.org/project/orm-lens/)
-[![Total downloads](https://img.shields.io/pepy/dt/django-orm-lens?style=for-the-badge&logo=pypi&logoColor=white&label=total%20downloads&color=3775a9&labelColor=1e293b)](https://pepy.tech/project/django-orm-lens)
+[![Total downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FFROWNINGdev%2Form-lens%2Fbadges%2Fpypi-downloads.json&style=for-the-badge&label=total%20downloads&labelColor=1e293b)](https://pypistats.org/packages/orm-lens)
 [![Marketplace rating](https://img.shields.io/visual-studio-marketplace/r/frowningdev.django-orm-lens?style=for-the-badge&logo=visualstudiocode&logoColor=white&label=rating&color=c160ef&labelColor=1e293b)](https://marketplace.visualstudio.com/items?itemName=frowningdev.django-orm-lens&ssr=false#review-details)
 [![Contributors](https://img.shields.io/github/contributors/FROWNINGdev/orm-lens?style=for-the-badge&logo=github&logoColor=white&label=contributors&color=8b5cf6&labelColor=1e293b)](https://github.com/FROWNINGdev/orm-lens/graphs/contributors)
 [![Last commit](https://img.shields.io/github/last-commit/FROWNINGdev/orm-lens?style=for-the-badge&logo=github&logoColor=white&label=last%20commit&color=64748b&labelColor=1e293b)](https://github.com/FROWNINGdev/orm-lens/commits/main)

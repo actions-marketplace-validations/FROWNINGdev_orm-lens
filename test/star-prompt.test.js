@@ -12,6 +12,9 @@ const {
   shouldPrompt,
   FIRST_PROMPT_AT,
   REPEAT_AFTER,
+  reviewUrl,
+  MARKETPLACE_REVIEW_URL,
+  OPEN_VSX_REVIEW_URL,
 } = require('../out/starPrompt');
 
 test.after(() => {
@@ -31,7 +34,7 @@ test('stays quiet before the tool has proved useful', () => {
   }
 });
 
-test('asks on the third diagram, not on install', () => {
+test('asks once FIRST_PROMPT_AT results have landed, not on install', () => {
   assert.equal(shouldPrompt(fresh({ opens: FIRST_PROMPT_AT })), true);
 });
 
@@ -40,14 +43,15 @@ test('silenced state is never prompted, however many opens', () => {
 });
 
 test('"Later" defers rather than declines, and re-arms exactly once', () => {
-  const deferred = fresh({ opens: 3, dismissedAt: 3 });
+  const at = FIRST_PROMPT_AT;
+  const deferred = fresh({ opens: at, dismissedAt: at });
 
   // Silent through the whole gap — the failure mode being guarded against is
   // re-asking on the very next open.
-  for (let n = 4; n < 3 + REPEAT_AFTER; n++) {
+  for (let n = at + 1; n < at + REPEAT_AFTER; n++) {
     assert.equal(shouldPrompt({ ...deferred, opens: n }), false, `opens=${n}`);
   }
-  assert.equal(shouldPrompt({ ...deferred, opens: 3 + REPEAT_AFTER }), true);
+  assert.equal(shouldPrompt({ ...deferred, opens: at + REPEAT_AFTER }), true);
 });
 
 test('a deferral late in life still gets its full gap', () => {
@@ -62,4 +66,21 @@ test('thresholds are injectable, so the policy is testable without rebuilding', 
   assert.equal(shouldPrompt(fresh({ opens: 1 }), 1), true);
   assert.equal(shouldPrompt(fresh({ opens: 5, dismissedAt: 5 }), 1, 2), false);
   assert.equal(shouldPrompt(fresh({ opens: 7, dismissedAt: 5 }), 1, 2), true);
+});
+
+test('"Rate" goes to the store this editor installs from', () => {
+  // vscode.env.appName as each build reports it.
+  for (const app of ['Visual Studio Code', 'Visual Studio Code - Insiders']) {
+    assert.equal(reviewUrl(app), MARKETPLACE_REVIEW_URL, app);
+  }
+  // Cursor, Windsurf and the OSS builds install from Open VSX; a Marketplace
+  // rating from them would land where their users never look.
+  for (const app of ['Cursor', 'Windsurf', 'VSCodium', 'Code - OSS', '']) {
+    assert.equal(reviewUrl(app), OPEN_VSX_REVIEW_URL, app || '(empty)');
+  }
+});
+
+test('both review URLs point at this extension', () => {
+  assert.match(MARKETPLACE_REVIEW_URL, /itemName=frowningdev\.django-orm-lens\b/);
+  assert.match(OPEN_VSX_REVIEW_URL, /\/extension\/frowningdev\/django-orm-lens\//);
 });

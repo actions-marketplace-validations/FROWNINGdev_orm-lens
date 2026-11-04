@@ -98,9 +98,21 @@ jobs:
           name: vsix
           path: ${{ env.VSIX_PATH }}
 
+      # Until v0.20.0 every extension release page was titled with the bare
+      # tag and listed merged PRs instead of what changed for the user - and
+      # v* is what the repository sidebar shows as "Latest". Same notes and
+      # title rules as the Python releases: scripts/release_notes.py.
+      - name: Release notes from CHANGELOG
+        id: notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: python3 scripts/release_notes.py "$TAG"
+        env:
+          TAG: ${{ github.ref_name }}
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           files: ${{ env.VSIX_PATH }}
-          generate_release_notes: true
+          name: ${{ steps.notes.outputs.title }}
+          body_path: release-notes.md

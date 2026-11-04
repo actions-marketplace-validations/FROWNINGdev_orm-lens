@@ -1,0 +1,54 @@
+name: Download badge
+
+# Refreshes the README's PyPI download count, summed over both package names
+# (django-orm-lens before the rename, orm-lens after). The numbers live on the
+# unprotected `badges` branch, not on main: main takes changes only through
+# reviewed pull requests, and a weekly counter bump is not worth one.
+# See scripts/download_badge.py for how the two names are combined.
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'   # Mondays; pypistats has settled the previous week
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: download-badge
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: src
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          ref: badges
+          path: badges
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Recount
+        run: python src/scripts/download_badge.py badges
+
+      - name: Publish
+        working-directory: badges
+        run: |
+          git add downloads-history.json pypi-downloads.json
+          if git diff --cached --quiet; then
+            echo "count unchanged"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "badge: $(python -c 'import json;print(json.load(open("pypi-downloads.json"))["message"])') downloads"
+          git push origin HEAD:badges

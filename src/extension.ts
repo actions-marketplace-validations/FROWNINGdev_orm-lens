@@ -442,6 +442,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const snippetString = new vscode.SnippetString(chosen.template.snippet);
         if (editor && editor.document.languageId === 'python') {
           await editor.insertSnippet(snippetString);
+          void maybeAskForStar(context);
           return;
         }
         // No active Python editor — open a fresh untitled buffer.
@@ -465,6 +466,7 @@ export async function activate(context: vscode.ExtensionContext) {
           preview: false,
         });
         await openedEditor.insertSnippet(snippetString);
+        void maybeAskForStar(context);
       },
     ),
   );
@@ -558,6 +560,7 @@ export async function activate(context: vscode.ExtensionContext) {
               new vscode.Range(pos, pos),
               vscode.TextEditorRevealType.InCenter,
             );
+            void maybeAskForStar(context);
           },
         );
       },
@@ -685,6 +688,7 @@ export async function activate(context: vscode.ExtensionContext) {
         language: 'markdown',
       });
       await vscode.window.showTextDocument(doc, { preview: false });
+      void maybeAskForStar(context);
     }),
   );
 
@@ -747,6 +751,7 @@ export async function activate(context: vscode.ExtensionContext) {
           language: 'python',
         });
         await vscode.window.showTextDocument(doc, { preview: false });
+        void maybeAskForStar(context);
       }
     )
   );
@@ -842,6 +847,7 @@ export async function activate(context: vscode.ExtensionContext) {
           title: `Reverse references to ${modelName} (${inbound.length})`,
           placeHolder: 'Models that point at this one',
         });
+        void maybeAskForStar(context);
       }
     )
   );

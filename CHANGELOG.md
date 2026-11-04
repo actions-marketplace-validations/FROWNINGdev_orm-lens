@@ -28,6 +28,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#196](https://github.com/FROWNINGdev/orm-lens/issues/196)) Contributed by
   @bfs2021.
 
+## [0.21.0] - 2026-11-04
+
+> Rate ORM Lens from the editor you use it in, after it has done some work for you.
+
+### Changed
+
+- **The thank-you prompt offers a store rating, and waits for real use.** It
+  used to count only ER-diagram opens and link only to GitHub. It now counts
+  every command that hands you a result - the diagram, a schema diff, an
+  impact-analysis jump, a generated factory or query, the reverse-references
+  list - but never a cancelled pick or an error, and asks on the fifth
+  instead of the third. "Rate it" opens the Visual Studio Marketplace in VS
+  Code and Open VSX in Cursor, Windsurf, VSCodium and other builds, since a
+  rating only helps on the store your editor installs from. Still at most
+  two asks, ever; anyone who already answered is not asked again.
+- **Listing name: "ORM Lens for Django — ER Diagram, N+1 & Autocomplete".**
+  The extension ID `frowningdev.django-orm-lens` is unchanged.
+- **The README download badge counts both package names.** It showed
+  `django-orm-lens` alone, so installs under the new name went uncounted; it now adds
+  `orm-lens` without counting a shim install twice
+  (`scripts/download_badge.py`, refreshed weekly).
+- **Release pages are titled for users.** A CHANGELOG section can open with a
+  `> headline` line, which becomes the GitHub release title for both
+  extension and Python tags; extension releases also carry their CHANGELOG
+  section instead of a list of merged PRs.
+
 ### Fixed
 
 - **The extension package no longer carries the Python CLI.** Every VSIX

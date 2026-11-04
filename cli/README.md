@@ -4,7 +4,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/orm-lens?color=3775a9&label=PyPI&logo=pypi&logoColor=white)](https://pypi.org/project/orm-lens/)
 [![Python](https://img.shields.io/pypi/pyversions/orm-lens?color=3775a9&logo=python&logoColor=white)](https://pypi.org/project/orm-lens/)
-[![Downloads](https://img.shields.io/pepy/dt/django-orm-lens?color=3775a9&label=downloads&logo=pypi&logoColor=white)](https://pepy.tech/project/django-orm-lens)
+[![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FFROWNINGdev%2Form-lens%2Fbadges%2Fpypi-downloads.json)](https://pypistats.org/packages/orm-lens)
 [![License](https://img.shields.io/github/license/FROWNINGdev/orm-lens?color=16a34a)](https://github.com/FROWNINGdev/orm-lens/blob/main/LICENSE)
 
 **Static analysis + MCP server for Django and SQLAlchemy models.** Terminal- and AI-agent-friendly.

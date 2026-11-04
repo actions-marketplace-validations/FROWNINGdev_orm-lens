@@ -81,44 +81,9 @@ jobs:
       # shipped.
       - name: Release notes from CHANGELOG
         id: notes
-        run: |
-          python - "$TAG" <<'PY'
-          import os, pathlib, re, sys
-
-          tag = sys.argv[1]                      # py-v1.8.1
-          heading = tag.replace("py-v", "py-")   # py-1.8.1
-          lines = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
-          starts = [i for i, l in enumerate(lines) if l.startswith("## ")]
-          body = ""
-          for n, i in enumerate(starts):
-              if re.match(rf"## \[{re.escape(heading)}\]", lines[i]):
-                  end = starts[n + 1] if n + 1 < len(starts) else len(lines)
-                  body = "\n".join(lines[i + 1:end]).strip()
-                  break
-          if not body:
-              # No section is not a reason to fail the publish - the package is
-              # already on PyPI by this point. Ship a stub and say so.
-              body = f"See CHANGELOG.md for {heading}."
-              print(f"::warning::no CHANGELOG section for {heading}")
-          pathlib.Path("release-notes.md").write_text(body + "\n", encoding="utf-8")
-          print(f"wrote {len(body)} chars of notes for {tag}")
-
-          # Title the release after its headline change. A page called just
-          # "py-v1.9.0" tells a reader nothing the tag did not already say,
-          # while every hand-made page carries a subtitle.
-          lead = re.search(r"^- \*\*(.+?)\*\*", body, re.M)
-          title = tag
-          if lead:
-              # A release title is plain text on GitHub - backticks would show
-              # up as backticks.
-              subtitle = " ".join(lead.group(1).replace("`", "").split()).rstrip(".")
-              if len(subtitle) > 70:
-                  subtitle = subtitle[:67].rstrip() + "..."
-              title = f"{tag} - {subtitle}"
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write(f"title={title}\n")
-          print("release title:", title)
-          PY
+        # Title: the section's "> headline" line, else its first bold bullet.
+        # Shared with publish.yml - see scripts/release_notes.py.
+        run: python scripts/release_notes.py "$TAG"
         env:
           TAG: ${{ github.ref_name }}
 
