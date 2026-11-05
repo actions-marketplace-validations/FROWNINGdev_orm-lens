@@ -503,3 +503,109 @@ def test_mcp_accepts_sqlalchemy_projects_and_describes_models(tmp_path: Path, mo
     rels = json.loads(_tool_find_relations({"workspace_root": str(tmp_path), "model": "User"}))
     assert {i["from"] for i in rels["inbound"]} == {"db.Address"}
     assert {r["name"] for r in rels["relationships"]} == {"addresses", "roles"}
+
+
+COMPOSITE_FK = '''
+from sqlalchemy import ForeignKeyConstraint
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+class Base(DeclarativeBase):
+    pass
+
+class Order(Base):
+    __tablename__ = "order"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(primary_key=True)
+
+class OrderLine(Base):
+    __tablename__ = "order_line"
+    order_id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(primary_key=True)
+    __table_args__ = (
+        ForeignKeyConstraint(["order_id", "tenant_id"], ["order.id", "order.tenant_id"],
+                             ondelete="CASCADE"),
+    )
+'''
+
+
+def test_composite_foreign_key_draws_one_relation() -> None:
+    models = _models(("app/models.py", COMPOSITE_FK))
+    fields = _fields(models["OrderLine"])
+    assert fields["order_id"].related_model == "Order"
+    assert fields["order_id"].relation_kind == "ForeignKey"
+    assert fields["order_id"].on_delete == "CASCADE"
+    assert not fields["tenant_id"].is_relation
+    index = WorkspaceIndex(apps=[ParsedApp(name="app", path="app", models=list(models.values()))])
+    assert _build_mermaid(index).count('OrderLine }o--|| Order : "order_id [CASCADE]"') == 1
+    assert build_dbml(index).count("Ref: app.OrderLine.order_id > app.Order.id [delete: cascade]") == 1
+
+
+def test_composite_foreign_key_cli_formats(tmp_path: Path) -> None:
+    _write(tmp_path, "app/models.py", COMPOSITE_FK)
+    for fmt, edge in (
+        ("mermaid", 'OrderLine }o--|| Order : "order_id [CASCADE]"'),
+        ("dbml", "Ref: app.OrderLine.order_id > app.Order.id [delete: cascade]"),
+    ):
+        code, out = _run("er", "--path", str(tmp_path), "--format", fmt)
+        assert code == 0
+        assert out.count(edge) == 1
+
+
+def test_incomplete_or_mixed_table_constraints_do_not_invent_relations() -> None:
+    for local, remote in (
+        ('["order_id", "tenant_id"]', '["order.id"]'),
+        ('["order_id", "missing"]', '["order.id", "order.tenant_id"]'),
+        ('["order_id", "tenant_id"]', '["order.id", "other.tenant_id"]'),
+        ('["order_id", dynamic_column]', '["order.id", "order.tenant_id"]'),
+        ('["order_id", "tenant_id"]', '["order.id", dynamic_target]'),
+    ):
+        source = COMPOSITE_FK.replace(
+            '["order_id", "tenant_id"], ["order.id", "order.tenant_id"]',
+            f'{local}, {remote}',
+        )
+        fields = _fields(_models(("app/models.py", source))["OrderLine"])
+        assert not any(field.is_relation for field in fields.values()), (local, remote)
+
+
+def test_single_column_table_constraint_still_draws_relation() -> None:
+    source = COMPOSITE_FK.replace(
+        '["order_id", "tenant_id"], ["order.id", "order.tenant_id"]',
+        '("order_id",), ("order.id",)',
+    )
+    field = _fields(_models(("app/models.py", source))["OrderLine"])["order_id"]
+    assert field.related_model == "Order"
+    assert field.on_delete == "CASCADE"
+
+
+def test_composite_constraint_resolves_explicit_column_keys() -> None:
+    for declaration in (
+        'mapped_column("tenant", primary_key=True)',
+        'mapped_column(name="tenant", primary_key=True)',
+        'mapped_column("stored_tenant", key="tenant", primary_key=True)',
+    ):
+        prefix, separator, local = COMPOSITE_FK.partition("class OrderLine")
+        source = prefix + separator + local.replace(
+            'tenant_id: Mapped[int] = mapped_column(primary_key=True)',
+            f'tenant_id: Mapped[int] = {declaration}',
+        ).replace('["order_id", "tenant_id"]', '["order_id", "tenant"]')
+        fields = _fields(_models(("app/models.py", source))["OrderLine"])
+        assert fields["order_id"].related_model == "Order"
+        assert not fields["tenant_id"].is_relation
+
+
+def test_composite_constraint_preserves_dbml_column_types_and_primary_keys() -> None:
+    models = list(_models(("app/models.py", COMPOSITE_FK)).values())
+    dbml = build_dbml(WorkspaceIndex(apps=[ParsedApp(name="app", path="app", models=models)]))
+    assert "  order_id Integer [pk]" in dbml
+    assert dbml.count("  tenant_id Integer [pk]") == 2
+    assert "  order_id ForeignKey" not in dbml
+
+
+def test_constraint_carried_by_sole_primary_key_is_one_to_one() -> None:
+    prefix, separator, local = COMPOSITE_FK.partition("class OrderLine")
+    source = prefix + separator + local.replace(
+        'tenant_id: Mapped[int] = mapped_column(primary_key=True)',
+        'tenant_id: Mapped[int] = mapped_column()',
+    )
+    fields = _fields(_models(("app/models.py", source))["OrderLine"])
+    assert fields["order_id"].relation_kind == "OneToOneField"

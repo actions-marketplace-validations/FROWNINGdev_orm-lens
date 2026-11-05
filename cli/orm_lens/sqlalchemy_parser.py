@@ -361,6 +361,7 @@ def _on_delete(node: ast.AST | None) -> str | None:
 @dataclass
 class _Column:
     field: ParsedField
+    column_key: str | None = None
     fk_target: str | None = None
     fk_class: str | None = None
     unique: bool = False
@@ -604,7 +605,7 @@ def _parse_table_args(cls: _Class, value: ast.expr | None) -> None:
             continue
         local_names = [s for s in (_const_str(e) for e in local.elts) if s]
         remote_names = [s for s in (_const_str(e) for e in remote.elts) if s]
-        if local_names and remote_names:
+        if local_names and len(local_names) == len(local.elts) == len(remote_names) == len(remote.elts):
             cls.fk_constraints.append(
                 (local_names, remote_names, _on_delete(_kwargs(item).get("ondelete")))
             )
@@ -759,6 +760,12 @@ def _parse_column(
         field_.on_delete = ondelete
     return _Column(
         field=field_,
+        column_key=(
+            _const_str(kwargs.get("key"))
+            or (_const_str(call.args[0]) if call.args else None)
+            or _const_str(kwargs.get("name"))
+            or name
+        ),
         fk_target=fk_table,
         fk_class=fk_class,
         unique=unique,
@@ -1325,14 +1332,23 @@ def _copy_rel(rel: ParsedRelationship, inherited_from: str | None = None) -> Par
 
 def _apply_fk_constraints(c: _Class, cols: list[_Column]) -> None:
     by_name = {col.field.name: col for col in cols}
+    by_name.update({col.column_key: col for col in cols if col.column_key})
+    primary_keys = [col for col in cols if col.primary_key]
     for local, remote, ondelete in c.fk_constraints:
-        if len(local) != 1:
-            continue  # composite keys: no single column to draw from
+        if any(name not in by_name for name in local):
+            continue
+        if len(local) > 1 and (
+            any("." not in target for target in remote)
+            or len({target.rsplit(".", 1)[0] for target in remote}) != 1
+        ):
+            continue
+        # Represent the whole constraint once, on its first local column.
         col = by_name.get(local[0])
         if col is None or col.field.is_relation:
             continue
         col.field.is_relation = True
-        col.field.relation_kind = "OneToOneField" if col.unique else "ForeignKey"
+        sole_pk = len(primary_keys) == 1 and primary_keys[0] is col
+        col.field.relation_kind = "OneToOneField" if col.unique or sole_pk else "ForeignKey"
         col.field.on_delete = ondelete
         col.fk_target = remote[0]
 

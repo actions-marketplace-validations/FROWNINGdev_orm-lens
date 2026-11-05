@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [py-1.17.0] - 2026-11-04
+
+> Alembic risks over MCP, and composite foreign keys in ER diagrams.
+
 ### Added
 
 - **`migration_risk` is an MCP tool of its own.** Agents working on FastAPI,
@@ -27,6 +31,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`TABLE = "orders"; op.drop_table(TABLE)`) is now resolved for every rule.
   ([#196](https://github.com/FROWNINGdev/orm-lens/issues/196)) Contributed by
   @bfs2021.
+
+### Fixed
+
+- **SQLAlchemy: composite foreign keys are drawn.** A `ForeignKeyConstraint`
+  over several columns in `__table_args__` now becomes one relation in the ER
+  diagram, carried by its first local column, with `ondelete=` as its delete
+  policy. Explicit column names and `key=` are resolved; constraints with
+  dynamic names, missing columns or targets in several tables are skipped
+  rather than guessed. In DBML a foreign-key column of a SQLAlchemy model keeps
+  its real type (`user_id Integer`) and its `[pk]` marker instead of
+  `user_id ForeignKey`.
+  ([#208](https://github.com/FROWNINGdev/orm-lens/issues/208)) Contributed by
+  @snehaapratap.
+- **Alembic messages no longer say `'None'`.** When a table or column is only
+  named at runtime (`for t in [...]: op.drop_column(t, "legacy_id")`), every
+  rule says so: `Drops 'legacy_id' of a table named at runtime` instead of
+  `Drops 'None.legacy_id'`.
+  ([#207](https://github.com/FROWNINGdev/orm-lens/issues/207)) Contributed by
+  @SatriaBagusNurhadianto.
 
 ## [0.21.0] - 2026-11-04
 

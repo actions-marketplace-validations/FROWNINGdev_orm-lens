@@ -527,7 +527,7 @@ The comment goes up **before** the job fails, so a blocked PR still explains why
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/FROWNINGdev/orm-lens
-    rev: py-v1.16.0
+    rev: py-v1.17.0
     hooks:
       - id: django-orm-lens-nplusone
       - id: django-orm-lens-migration-risk

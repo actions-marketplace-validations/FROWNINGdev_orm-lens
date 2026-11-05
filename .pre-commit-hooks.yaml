@@ -11,7 +11,7 @@
 #
 # The hook environment installs the published PyPI package (see the root
 # pyproject.toml shim). Pin the analyzer itself with:
-#   additional_dependencies: ["orm-lens==1.16.0"]
+#   additional_dependencies: ["orm-lens==1.17.0"]
 # Pins written before the rename (`django-orm-lens==<version>`) keep working.
 #
 # The hook ids and the `django-orm-lens` entry keep the pre-rename name on

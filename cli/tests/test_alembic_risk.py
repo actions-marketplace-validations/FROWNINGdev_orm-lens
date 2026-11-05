@@ -152,6 +152,37 @@ def test_drop_table_named_at_runtime_says_so(tmp_path: Path) -> None:
     assert "named at runtime" in f.description
 
 
+def test_drop_column_of_a_table_named_at_runtime_says_so(tmp_path: Path) -> None:
+    # #207: this printed "Drops 'None.legacy_id'".
+    body = "    for table in ['orders', 'invoices']:\n        op.drop_column(table, 'legacy_id')"
+    (f,) = _rules(tmp_path, body)["alembic_drop_column_breaks_running_code"]
+    assert f.model is None
+    assert f.field == "legacy_id"
+    assert "None" not in f.description
+    assert "'legacy_id' of a table named at runtime" in f.description
+
+
+def test_no_alembic_message_prints_none_for_runtime_names(tmp_path: Path) -> None:
+    loop = "    for t, c in [('orders', 'status')]:\n"
+    calls = [
+        "op.add_column(t, sa.Column(c, sa.Integer(), nullable=False))",
+        "op.create_index(c, t, ['status'], unique=True)",
+        "op.alter_column(t, c, new_column_name='state')",
+        "op.alter_column(t, c, nullable=False)",
+        "op.alter_column(t, c, type_=sa.BigInteger())",
+        "op.drop_column(t, c)",
+        "op.rename_table(t, c)",
+        "op.create_unique_constraint('uq', t, ['status'])",
+        "op.create_foreign_key('fk', t, 'users', ['user_id'], ['id'])",
+        "op.create_check_constraint('ck', t, 'status > 0')",
+    ]
+    for n, call in enumerate(calls):
+        findings = [f for fs in _rules(tmp_path / str(n), loop + "        " + call).values() for f in fs]
+        assert findings, call
+        for f in findings:
+            assert "None" not in f.description, (call, f.description)
+
+
 def test_drop_table_in_the_base_or_after_create_table_is_silent(tmp_path: Path) -> None:
     assert "alembic_drop_table_breaks_running_code" not in _rules(
         tmp_path / "base", "    op.drop_table('orders')", base=True

@@ -19,7 +19,7 @@ Bases are followed across files by import, including an aliased import from a fi
 
 **Table names** come from `__tablename__`, `__table__ = Table("name", ...)`, a `@declared_attr` `__tablename__` on a base (`cls.__name__.lower()` or a snake_case conversion), Flask-SQLAlchemy's automatic snake_case name, or SQLModel's lowercase class name.
 
-**Columns** are `Mapped[...]` attributes with or without `mapped_column(...)`, `Column(...)` / `db.Column(...)`, `deferred(...)`, SQLModel `Field(...)`, and `Annotated` aliases such as `intpk = Annotated[int, mapped_column(primary_key=True)]`. The type is the explicit SQLAlchemy type (`String(50)` → `String`) or the annotation's (`int` → `Integer`, `datetime` → `DateTime`, `UUID` → `Uuid`). A column with `ForeignKey("table.col")` (or SQLModel's `foreign_key=`, or a single-column `ForeignKeyConstraint` in `__table_args__`) is a relation to the class mapped to that table: `ForeignKey`, or `OneToOneField` when the column is unique or the primary key, with `ondelete=` as its delete policy.
+**Columns** are `Mapped[...]` attributes with or without `mapped_column(...)`, `Column(...)` / `db.Column(...)`, `deferred(...)`, SQLModel `Field(...)`, and `Annotated` aliases such as `intpk = Annotated[int, mapped_column(primary_key=True)]`. The type is the explicit SQLAlchemy type (`String(50)` → `String`) or the annotation's (`int` → `Integer`, `datetime` → `DateTime`, `UUID` → `Uuid`). A column with `ForeignKey("table.col")` (or SQLModel's `foreign_key=`, or a `ForeignKeyConstraint` in `__table_args__`) is a relation to the class mapped to that table: `ForeignKey`, or `OneToOneField` when the column is unique or the primary key, with `ondelete=` as its delete policy.
 
 **Relationships** (`relationship()`, `db.relationship()`, SQLModel `Relationship()`, and `@declared_attr` functions returning one) are listed apart from the columns, with their target, `lazy` loader, and whether they hold one object or many. The shape comes from the annotation (`Mapped[list["Post"]]`), `uselist=`, `secondary=`, `remote_side=`, `foreign_keys=`, or which side holds the foreign key. A `backref=` adds the attribute on the other class. A relationship with `secondary=` is a many-to-many: it also appears in the model's fields as a `ManyToManyField` through the association table, once even when both sides declare it.
 
@@ -73,6 +73,6 @@ Under `AsyncSession` a lazy load does not issue a query: it raises `MissingGreen
 ## Limits
 
 - Imperative mappings (`registry.map_imperatively`) and classes mapped to a `select()` are skipped or have no table name.
-- Composite foreign keys (`ForeignKeyConstraint` over several columns) are not drawn.
+- Composite `ForeignKeyConstraint`s draw one relation, carried by the first local column, with their `ondelete=` policy. Explicit column names and keys are resolved to their mapped attributes. DBML retains column types and primary-key markers. The diagram does not expand the full column-pair mapping. Constraints with dynamic column names, missing local columns, or targets spanning multiple tables are skipped.
 - Standalone `Table(...)` objects appear only as the association table of a many-to-many.
 - The N+1 detector does not follow a query through a repository method or into another module.

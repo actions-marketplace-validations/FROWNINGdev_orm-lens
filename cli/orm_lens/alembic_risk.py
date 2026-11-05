@@ -101,6 +101,25 @@ def _name_of(node: ast.AST | None) -> str | None:
     return None
 
 
+def _quoted(name: str | None, unnamed: str) -> str:
+    """``'orders'``, or ``unnamed`` when the name is only known at runtime.
+
+    ``for t in [...]: op.drop_column(t, "x")`` has no literal to print, and a
+    message saying ``'None'`` reads as a table called None.
+    """
+    return f"'{name}'" if name else unnamed
+
+
+def _column_ref(table: str | None, column: str | None) -> str:
+    if table and column:
+        return f"'{table}.{column}'"
+    if column:
+        return f"'{column}' of a table named at runtime"
+    if table:
+        return f"a column named at runtime of '{table}'"
+    return "a column named at runtime"
+
+
 def _module_assignments(tree: ast.Module) -> dict[str, ast.AST]:
     out: dict[str, ast.AST] = {}
     for node in tree.body:
@@ -284,8 +303,9 @@ class _RevisionAnalyzer:
         if not self._populated(table):
             return
         has_python_default = _kw(column, "default") is not None
+        added = f"NOT NULL column '{col_name}'" if col_name else "a NOT NULL column named at runtime"
         description = (
-            f"Adds NOT NULL column '{col_name}' to '{table}' without server_default; "
+            f"Adds {added} to {_quoted(table, 'a table named at runtime')} without server_default; "
             f"existing rows get NULL and the ALTER fails."
         )
         if has_python_default:
@@ -309,10 +329,11 @@ class _RevisionAnalyzer:
         if _literal(_kw(call, "postgresql_concurrently")) is True:
             return
         name = _name_of(_arg(call, 0, "index_name"))
-        unique = _literal(_kw(call, "unique")) is True
+        kind = "unique index" if _literal(_kw(call, "unique")) is True else "index"
+        index = f"{kind} '{name}'" if name else f"a {kind} named at runtime"
         self._add(
             call, "create_index", "alembic_create_index_locks_table", table, None,
-            f"Builds {'unique ' if unique else ''}index '{name}' on '{table}' without CONCURRENTLY; "
+            f"Builds {index} on {_quoted(table, 'a table named at runtime')} without CONCURRENTLY; "
             f"PostgreSQL blocks writes to the table for the whole build.",
             "On PostgreSQL pass postgresql_concurrently=True inside "
             "op.get_context().autocommit_block().",
@@ -324,10 +345,11 @@ class _RevisionAnalyzer:
         if not self._populated(table):
             return
         new_name = _name_of(_kw(call, "new_column_name"))
+        ref = _column_ref(table, column)
         if new_name:
             self._add(
                 call, "alter_column", "alembic_rename_column_breaks_running_code", table, new_name,
-                f"Renames '{table}.{column}' to '{new_name}'; code still running from the previous "
+                f"Renames {ref} to '{new_name}'; code still running from the previous "
                 f"release keeps using the old name until it is replaced.",
                 "Add the new column, write to both, backfill, switch reads, then drop the old one.",
                 old_name=column,
@@ -335,7 +357,7 @@ class _RevisionAnalyzer:
         if _literal(_kw(call, "nullable")) is False and _kw(call, "server_default") is None:
             self._add(
                 call, "alter_column", "alembic_set_not_null_scans_table", table, column,
-                f"Sets '{table}.{column}' NOT NULL: PostgreSQL scans the whole table under an exclusive "
+                f"Sets {ref} NOT NULL: PostgreSQL scans the whole table under an exclusive "
                 f"lock, and the ALTER fails if any row is still NULL.",
                 "Backfill first. On large tables add CHECK (col IS NOT NULL) NOT VALID, VALIDATE it, "
                 "then set NOT NULL.",
@@ -343,7 +365,7 @@ class _RevisionAnalyzer:
         if _kw(call, "type_") is not None:
             self._add(
                 call, "alter_column", "alembic_alter_column_type_rewrites", table, column,
-                f"Changes the type of '{table}.{column}'; most type changes rewrite the table under an "
+                f"Changes the type of {ref}; most type changes rewrite the table under an "
                 f"exclusive lock.",
                 "Add a column of the new type, backfill, switch reads, then drop the old column.",
             )
@@ -355,7 +377,7 @@ class _RevisionAnalyzer:
             return
         self._add(
             call, "drop_column", "alembic_drop_column_breaks_running_code", table, column,
-            f"Drops '{table}.{column}'; the previous release's models still select it until every "
+            f"Drops {_column_ref(table, column)}; the previous release's models still select it until every "
             f"instance is replaced.",
             "Remove the column from the models and deploy first; drop it in a later release.",
         )
@@ -381,8 +403,9 @@ class _RevisionAnalyzer:
             return
         self._add(
             call, "rename_table", "alembic_rename_table_breaks_running_code", new, None,
-            f"Renames table '{old}' to '{new}'; code still running from the previous release keeps "
-            f"querying '{old}'.",
+            f"Renames {_quoted(old, 'a table named at runtime')} to "
+            f"{_quoted(new, 'a name chosen at runtime')}; code still running from the previous "
+            f"release keeps querying {_quoted(old, 'the old name')}.",
             "Create the new table or a view under the new name, migrate readers, then drop the old one.",
             old_name=old,
         )
@@ -393,7 +416,7 @@ class _RevisionAnalyzer:
             return
         self._add(
             call, "create_unique_constraint", "alembic_add_unique_constraint_locks_and_may_fail", table, None,
-            f"Adds a unique constraint on '{table}': the index is built while writes are blocked, and "
+            f"Adds a unique constraint on {_quoted(table, 'a table named at runtime')}: the index is built while writes are blocked, and "
             f"existing duplicates make it fail.",
             "CREATE UNIQUE INDEX CONCURRENTLY first, then ADD CONSTRAINT ... USING INDEX.",
         )
@@ -404,7 +427,7 @@ class _RevisionAnalyzer:
             return
         self._add(
             call, "create_foreign_key", "alembic_add_foreign_key_validates_rows", table, None,
-            f"Adds a foreign key on '{table}': every existing row is checked while both tables are "
+            f"Adds a foreign key on {_quoted(table, 'a table named at runtime')}: every existing row is checked while both tables are "
             f"locked against writes.",
             "Add it NOT VALID with op.execute, then VALIDATE CONSTRAINT in a separate step.",
         )
@@ -415,7 +438,8 @@ class _RevisionAnalyzer:
             return
         self._add(
             call, "create_check_constraint", "alembic_add_check_constraint_validates_rows", table, None,
-            f"Adds a check constraint on '{table}': every existing row is checked under an exclusive lock.",
+            f"Adds a check constraint on {_quoted(table, 'a table named at runtime')}: every existing "
+            f"row is checked under an exclusive lock.",
             "Add it NOT VALID with op.execute, then VALIDATE CONSTRAINT in a separate step.",
         )
 

@@ -18,13 +18,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "django-orm-lens"
-version = "1.16.0"
+version = "1.17.0"
 description = "Renamed to orm-lens: installs orm-lens and keeps the old command and import names."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "frowningdev" }]
-dependencies = ["orm-lens==1.16.0"]
+dependencies = ["orm-lens==1.17.0"]
 classifiers = [
     "Development Status :: 7 - Inactive",
     "License :: OSI Approved :: MIT License",
@@ -32,8 +32,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-mcp = ["orm-lens[mcp]==1.16.0"]
-full = ["orm-lens[mcp]==1.16.0"]
+mcp = ["orm-lens[mcp]==1.17.0"]
+full = ["orm-lens[mcp]==1.17.0"]
 
 [project.urls]
 Homepage = "https://github.com/FROWNINGdev/orm-lens"

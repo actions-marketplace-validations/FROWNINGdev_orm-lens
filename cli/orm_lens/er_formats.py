@@ -195,12 +195,17 @@ def build_dbml(index: WorkspaceIndex) -> str:
             if pk is None:
                 lines.append(f"  id {_implicit_pk_type(model)} [pk]")
             for f in _columns(model):
-                if f.is_relation:
+                scalar_column = model.orm == "sqlalchemy" and f.type != "relationship"
+                if f.is_relation and not scalar_column:
                     continue
-                marker = " [pk]" if pk is not None and f.name == pk.name else ""
+                is_pk = (
+                    bool(_PK_RE.search(f.args))
+                    if scalar_column else pk is not None and f.name == pk.name
+                )
+                marker = " [pk]" if is_pk else ""
                 lines.append(f"  {f.name} {f.type}{marker}")
             for f in _columns(model):
-                if f.is_relation:
+                if f.is_relation and (model.orm != "sqlalchemy" or f.type == "relationship"):
                     lines.append(f"  {f.name} {f.relation_kind or 'ForeignKey'}")
             src = _short_source(app.path, app.name, model).replace("'", "\\'")
             # ParsedModel.line_number is zero-based; DBML notes are shown to
