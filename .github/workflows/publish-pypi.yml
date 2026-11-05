@@ -6,24 +6,22 @@ on:
       - 'py-v*'
   workflow_dispatch:
 
-# Two distributions ship from every py-v* tag:
-#   * orm-lens         - the package itself (cli/)
-#   * django-orm-lens  - the pre-rename name, now an empty package that
-#                        installs the matching orm-lens (compat/django-orm-lens/)
+# Publishes orm-lens (cli/). The pre-rename django-orm-lens package
+# (compat/django-orm-lens/) depends on orm-lens>=1.17.1,<2 and so follows
+# every 1.x release on its own; it is not built here, and is uploaded by hand
+# on the rare change to it.
 #
 # OIDC - GitHub mints a short-lived token per run that PyPI verifies through
 # its Trusted Publisher config. See https://docs.pypi.org/trusted-publishers/
 #
-# PyPI-side setup (one-time, per project), owner=FROWNINGdev, repo=orm-lens,
+# PyPI-side setup (one-time), owner=FROWNINGdev, repo=orm-lens,
 # workflow=publish-pypi.yml, environment=pypi:
 #   https://pypi.org/manage/project/orm-lens/settings/publishing/
-#   https://pypi.org/manage/project/django-orm-lens/settings/publishing/
-# The django-orm-lens publisher was created when the repository was still
-# called django-orm-lens; PyPI matches on the repository name, so it has to
-# be edited to repo=orm-lens after the rename.
+# PyPI matches on the repository name, so a publisher created before the
+# rename (repo=django-orm-lens) no longer applies.
 #
 # A release can also be uploaded by hand with twine first. The step below
-# then sees both versions already on PyPI and skips the upload, so the rest
+# then sees the version already on PyPI and skips the upload, so the rest
 # of the release (release page, MCP Registry, container) still runs.
 permissions:
   contents: write   # the Release step below creates the tag's release page
@@ -43,26 +41,21 @@ jobs:
       - name: Install build tools
         run: python -m pip install --upgrade build twine
 
-      - name: Build orm-lens and the django-orm-lens compat package
+      - name: Build orm-lens
         run: |
           python -m build cli --outdir dist
-          python -m build compat/django-orm-lens --outdir dist
           ls -l dist
 
       - name: twine check
         run: python -m twine check dist/*
 
-      - name: Skip the upload if both versions are already on PyPI
+      - name: Skip the upload if this version is already on PyPI
         id: onpypi
         run: |
           VER="$(python -c "import tomllib; print(tomllib.load(open('cli/pyproject.toml','rb'))['project']['version'])")"
-          ALL=true
-          for PKG in orm-lens django-orm-lens; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/${PKG}/${VER}/json")
-            echo "${PKG}==${VER}: HTTP ${code}"
-            [ "$code" = "200" ] || ALL=false
-          done
-          echo "skip=${ALL}" >> "$GITHUB_OUTPUT"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/orm-lens/${VER}/json")
+          echo "orm-lens==${VER}: HTTP ${code}"
+          if [ "$code" = "200" ]; then echo "skip=true"; else echo "skip=false"; fi >> "$GITHUB_OUTPUT"
 
       - name: Publish to PyPI (OIDC trusted publisher)
         if: steps.onpypi.outputs.skip != 'true'

@@ -2,7 +2,7 @@
 
 import sys
 
-from orm_lens.cli import main
+from django_orm_lens_cli import main
 
 if __name__ == "__main__":
     sys.exit(main())

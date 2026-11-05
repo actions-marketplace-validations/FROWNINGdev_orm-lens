@@ -20,11 +20,11 @@ name = "orm-lens-hooks"
 version = "0.0.0"
 description = "pre-commit hook shim for orm-lens (the real package lives in cli/)"
 requires-python = ">=3.9"
-# Deliberately the pre-rename name: existing configs pin
-# `django-orm-lens==<old version>` in additional_dependencies, and that pin
-# must keep resolving. Unpinned, django-orm-lens installs the matching
-# orm-lens release; a pin of `orm-lens==<version>` (1.16.0+) works too.
-dependencies = ["django-orm-lens"]
+# The hooks run the `orm-lens` command, so the hook environment needs
+# orm-lens itself. An `additional_dependencies` pin of `orm-lens==<version>`
+# or of `django-orm-lens==<version>` (1.16.0+, which pins orm-lens) narrows
+# it to that release; see .pre-commit-hooks.yaml.
+dependencies = ["orm-lens"]
 
 [tool.setuptools]
 packages = []

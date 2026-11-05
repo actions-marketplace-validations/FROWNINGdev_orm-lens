@@ -106,13 +106,13 @@ jobs:
         run: pip install -e ".[dev]"
       - name: ruff
         working-directory: cli
-        run: python -m ruff check orm_lens tests ../compat/django-orm-lens/django_orm_lens
+        run: python -m ruff check orm_lens tests ../compat/django-orm-lens/django_orm_lens ../compat/django-orm-lens/django_orm_lens_cli.py
       - name: mypy
         working-directory: cli
-        run: python -m mypy orm_lens ../compat/django-orm-lens/django_orm_lens
-      # orm-lens and the django-orm-lens compat package ship from the same
-      # tag; a compat package that no longer builds would only show up on
-      # release day otherwise.
+        run: python -m mypy orm_lens ../compat/django-orm-lens/django_orm_lens ../compat/django-orm-lens/django_orm_lens_cli.py
+      # The django-orm-lens compat package is uploaded by hand, rarely; a
+      # compat package that no longer builds would only show up on that day
+      # otherwise.
       - name: Build both distributions
         run: |
           python -m build cli --outdir dist

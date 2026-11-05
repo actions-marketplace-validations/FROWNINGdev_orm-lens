@@ -165,14 +165,21 @@ def test_mcp_extra_pins_each_api_to_a_python_that_has_it() -> None:
             ), f"{extra}: this can never resolve, mcp requires 3.10: {req}"
 
 
-def test_compat_package_pins_the_same_orm_lens_release() -> None:
-    """``pip install django-orm-lens==X`` must install ``orm-lens==X``."""
+def test_compat_package_follows_the_current_orm_lens() -> None:
+    """``pip install django-orm-lens`` must keep installing this orm-lens.
+
+    The compat package is no longer released with orm-lens, so it pins a 1.x
+    range; that range has to admit the version in cli/pyproject.toml.
+    """
     if not COMPAT_PYPROJECT.is_file():
         pytest.skip("compat package not present (installed-package run)")
-    version = _pyproject_version()
+    version = tuple(int(p) for p in _pyproject_version().split("."))
     text = COMPAT_PYPROJECT.read_text(encoding="utf-8")
-    m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
-    assert m and m.group(1) == version, "compat/django-orm-lens version != cli version"
-    pins = re.findall(r'"orm-lens(?:\[mcp\])?==([^"]+)"', text)
-    assert pins, "compat package does not pin orm-lens"
-    assert set(pins) == {version}, f"compat pins {sorted(set(pins))}, cli is {version}"
+    specs = re.findall(r'"orm-lens(?:\[mcp\])?([<>=!~][^"]*)"', text)
+    assert len(specs) == 3, f"expected the base pin and two extras, got {specs}"
+    for spec in specs:
+        m = re.fullmatch(r">=(\d+)\.(\d+)\.(\d+),<(\d+)", spec)
+        assert m, f"compat must pin a range like >=1.17.1,<2, not {spec!r}"
+        floor = tuple(int(g) for g in m.groups()[:3])
+        assert floor <= version, f"compat floor {spec} is above orm-lens {version}"
+        assert int(m.group(4)) == version[0] + 1, f"compat {spec} excludes orm-lens {version}"

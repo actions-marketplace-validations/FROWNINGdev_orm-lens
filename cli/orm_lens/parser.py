@@ -29,13 +29,18 @@ from dataclasses import replace
 from fnmatch import fnmatch
 from pathlib import Path
 
+from ._paths import BROAD_SKIP_DIRS, _app_dir_for
 from .models import (
     ParsedApp,
     ParsedField,
     ParsedModel,
     WorkspaceIndex,
 )
-from .sqlalchemy_parser import declares_sqlalchemy, is_sqlalchemy_only_source
+from .sqlalchemy_parser import (
+    declares_sqlalchemy,
+    is_sqlalchemy_only_source,
+    scan_sqlalchemy_models,
+)
 
 RELATION_TYPES: tuple[str, ...] = ("ForeignKey", "ManyToManyField", "OneToOneField")
 
@@ -941,29 +946,12 @@ def _iter_python_files(root: Path, excludes: Sequence[str]) -> Iterable[Path]:
                 yield full
 
 
-def _app_dir_for(fs_path: str) -> tuple[str, str]:
-    parent = os.path.dirname(fs_path)
-    parent_name = os.path.basename(parent)
-    if parent_name == "models":
-        grand = os.path.dirname(parent)
-        return grand, os.path.basename(grand)
-    return parent, parent_name
-
-
 DEFAULT_EXCLUDES = (
     "**/migrations/**",
     "**/node_modules/**",
     "**/venv/**",
     "**/.venv/**",
     "**/env/**",
-)
-
-# Directory names skipped when walking a workspace for arbitrary ``.py`` files
-# (n+1 scanner, signal graph). Kept broader than ``DEFAULT_EXCLUDES`` on purpose:
-# those are glob patterns for the models.py walk, this is a dirname-based
-# denylist for the whole-tree walk.
-BROAD_SKIP_DIRS: frozenset = frozenset(
-    {"migrations", "node_modules", "venv", ".venv", "env", ".git", "__pycache__"}
 )
 
 
@@ -1033,8 +1021,6 @@ def scan_workspace(
     # project should not pay for: look only when there are no Django models
     # or the project declares SQLAlchemy.
     if include_sqlalchemy and (not found or declares_sqlalchemy(root_path)):
-        from .sqlalchemy_parser import scan_sqlalchemy_models
-
         sa_models, sa_files = scan_sqlalchemy_models(root_path, exclude_globs)
         found = [*found, *sa_models]
         scanned_files += sa_files

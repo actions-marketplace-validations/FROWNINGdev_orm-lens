@@ -3,7 +3,8 @@
 django-orm-lens became orm-lens in 1.16.0. ``import django_orm_lens`` and
 any ``django_orm_lens.<module>`` resolve to the very same module objects as
 ``orm_lens`` and ``orm_lens.<module>``, so code, ``mock.patch`` targets and
-pickles written against the old name keep working.
+pickles written against the old name keep working. Importing it raises a
+DeprecationWarning that points at ``orm_lens``.
 """
 
 from __future__ import annotations
@@ -12,12 +13,20 @@ import importlib
 import importlib.abc
 import importlib.util
 import sys
+import warnings
 from collections.abc import Sequence
 from importlib.machinery import ModuleSpec
 from types import ModuleType
 
 from orm_lens import *  # noqa: F403
 from orm_lens import __all__, __version__  # noqa: F401
+
+warnings.warn(
+    "django_orm_lens is now orm_lens: import orm_lens instead "
+    "(pip install orm-lens)",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 _PREFIX = __name__ + "."
 

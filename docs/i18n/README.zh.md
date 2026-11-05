@@ -404,10 +404,10 @@ orm-lens mcp
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/FROWNINGdev/orm-lens
-    rev: py-v1.17.0
+    rev: py-v1.17.1
     hooks:
-      - id: django-orm-lens-nplusone
-      - id: django-orm-lens-migration-risk
+      - id: orm-lens-nplusone
+      - id: orm-lens-migration-risk
 ```
 
 **GitHub Action** —— 检出的问题以 PR 注解呈现，无需任何额外权限：

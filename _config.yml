@@ -23,11 +23,11 @@ theme: jekyll-theme-primer
 # ("<title> | <tagline>"); `description` carries them into the meta description.
 title: ORM Lens
 tagline: ER diagrams, N+1 and migration-risk linter for Django and SQLAlchemy
+# Google cuts a description at about 155 characters, so this one fits in that.
+# It is also the fallback for every page without its own (see defaults below).
 description: >-
-  Static analysis for Django and SQLAlchemy models, Django migrations and
-  Alembic revisions: ER diagrams, N+1 detection, schema drift and
-  migration-risk checks across a VS Code extension, a CLI, and an MCP server.
-  No database, no app boot. Free and MIT. Formerly django-orm-lens.
+  Static analysis for Django and SQLAlchemy: ER diagrams, N+1 detection,
+  migration and Alembic risk checks. VS Code extension, CLI and MCP server.
 
 # Social card, consumed by jekyll-seo-tag. Without it the homepage unfurled
 # as a bare `summary` card with no image anywhere it was shared.
@@ -51,6 +51,115 @@ defaults:
       path: "README.md"
     values:
       canonical_url: https://frowningdev.github.io/orm-lens/
+  # README.md files under docs/rules and compat are served twice as well
+  # (as the directory index and as README.html); same fix.
+  - scope:
+      path: "compat/django-orm-lens/README.md"
+    values:
+      canonical_url: https://frowningdev.github.io/orm-lens/compat/django-orm-lens/
+  # The rule pages have no front matter (GitHub would render it as a table
+  # at the top of the file), so their <title> came from the heading and
+  # every one of them shared the site description above. Each gets its own
+  # here; the long-form pages also get a title in the words people search.
+  - scope:
+      path: "docs/rules/DOL001.md"
+    values:
+      description: "DOL001: qs.count() > 0 counts every matching row; .exists() stops at the first. Why the rewrite is safe, with Django examples and a QuickFix."
+  - scope:
+      path: "docs/rules/DOL002.md"
+    values:
+      description: "DOL002: qs.count() == 0 counts every row just to compare it with zero; not qs.exists() asks for one row. Django examples and a QuickFix."
+  - scope:
+      path: "docs/rules/DOL003.md"
+    values:
+      description: "DOL003: qs.first() is None fetches and hydrates a full row only to throw it away. Use not qs.exists() unless you need the object."
+  - scope:
+      path: "docs/rules/DOL004.md"
+    values:
+      description: "DOL004: qs.first() is not None loads a whole model instance to test existence; .exists() transfers only the answer. Django examples and a QuickFix."
+  - scope:
+      path: "docs/rules/DOL005.md"
+    values:
+      description: "DOL005: a .filter().exclude() chain can collapse into one .filter(Q(...) & ~Q(...)) that states the whole predicate. A Django readability rule."
+  - scope:
+      path: "docs/rules/DOL006.md"
+    values:
+      description: "DOL006: for x in list(qs) evaluates the whole Django QuerySet and allocates an extra list before the loop starts. Iterate the queryset directly."
+  - scope:
+      path: "docs/rules/DOL007.md"
+    values:
+      description: "DOL007: an attribute access inside a for-loop over a Django queryset can fire one query per row. How to spot the N+1 and fix it."
+  - scope:
+      path: "docs/rules/DOL008.md"
+    values:
+      description: "DOL008: catches misspelled field names in Django lookups such as filter(titel=...) and suggests the right name with a QuickFix."
+  - scope:
+      path: "docs/rules/DOL011.md"
+    values:
+      description: "DOL011: null=True on a Django CharField or TextField gives the column two empty values, NULL and ''. Why Django advises against it."
+  - scope:
+      path: "docs/rules/DOL013.md"
+    values:
+      description: "DOL013: a ForeignKey or OneToOneField without on_delete raises TypeError when the model loads. Catch it while typing, with a QuickFix."
+  - scope:
+      path: "docs/rules/DOL014.md"
+    values:
+      description: "DOL014: a Django CharField without max_length fails the system checks at load time. Catch it in the editor before makemigrations."
+  - scope:
+      path: "docs/rules/DOL015.md"
+    values:
+      description: "DOL015: max_length on a Django TextField is enforced only by the form widget, never by the database. Why it reads like a limit and is not one."
+  - scope:
+      path: "docs/rules/DOL021.md"
+    values:
+      description: "DOL021: datetime.now() returns a naive datetime; under USE_TZ=True Django warns on save and raises TypeError on comparison. Use timezone.now()."
+  - scope:
+      path: "docs/rules/DOL022.md"
+    values:
+      description: "DOL022: datetime.utcnow() is deprecated since Python 3.12 and returns a naive datetime despite its name. The aware replacement for Django."
+  - scope:
+      path: "docs/rules/DOL031.md"
+    values:
+      description: "DOL031: render(request, template, locals()) leaks every local variable of a Django view into the template. Pass an explicit context."
+  - scope:
+      path: "docs/rules/DOL032.md"
+    values:
+      description: "DOL032: fields = '__all__' in a ModelForm or ModelAdmin Meta exposes every model field for writing, including ones added later."
+  - scope:
+      path: "docs/rules/DOL041.md"
+    values:
+      description: "DOL041: flags SET of Postgres planner settings (enable_*, plan_cache_mode, jit) in application code, where they outlive the query they were meant for."
+  - scope:
+      path: "docs/rules/README.md"
+    values:
+      canonical_url: https://frowningdev.github.io/orm-lens/docs/rules/
+      title: "Django ORM lint rules reference"
+      description: "Every ORM Lens rule for Django code: queryset performance, model fields, datetime and security checks, plus N+1, migration and Alembic risk."
+  - scope:
+      path: "docs/rules/alembic.md"
+    values:
+      title: "Alembic migration risk checks (preview)"
+      description: "Static risk checks for Alembic revisions: NOT NULL columns, table-locking indexes, drops and renames that break a populated database."
+  - scope:
+      path: "docs/rules/drift.md"
+    values:
+      title: "Django schema drift check: models vs migrations"
+      description: "Do your Django migrations still describe your models? orm-lens drift compares them statically, without a database, ready for CI."
+  - scope:
+      path: "docs/rules/migrations.md"
+    values:
+      title: "Django migration risk linter: 16 rules"
+      description: "Static checks for dangerous Django migrations: NOT NULL without default, table-locking index builds, irreversible RunPython. No DB needed."
+  - scope:
+      path: "docs/rules/nplusone.md"
+    values:
+      title: "Static N+1 query detector for Django"
+      description: "Find Django N+1 queries without running the app: a static detector for querysets looped without select_related or prefetch_related."
+  - scope:
+      path: "docs/rules/sqlalchemy.md"
+    values:
+      title: "SQLAlchemy models: ER diagrams and N+1 (preview)"
+      description: "ER diagrams, model listing and N+1 detection for SQLAlchemy 2.0, Flask-SQLAlchemy and SQLModel models, read statically. Nothing is imported."
 
 # jekyll-sitemap publishes /sitemap.xml, the file search consoles take to
 # discover and recrawl the site. jekyll-seo-tag is named explicitly rather than

@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
+from ._paths import BROAD_SKIP_DIRS, _app_dir_for
 from .models import ParsedField, ParsedModel, ParsedRelationship
 
 # Cheap textual gate before ``ast.parse``. Broad on purpose: a model file
@@ -130,8 +131,6 @@ def declares_sqlalchemy(root: Path | str, depth: int = 2) -> bool:
     ``backend/requirements.txt``). Lets a large Django project skip reading
     every file in search of SQLAlchemy models it does not have.
     """
-    from .parser import BROAD_SKIP_DIRS
-
     base = Path(root)
     skip = BROAD_SKIP_DIRS | _SKIP_DIRS | {"node_modules"}
     level = [base]
@@ -1152,8 +1151,6 @@ def _wanted_column(col: _Column, sqlmodel: bool) -> bool:
 
 
 def _build_models(classes: list[_Class], modules: list[_Module]) -> list[ParsedModel]:
-    from .parser import _app_dir_for  # local import: parser imports this module
-
     res = _Resolver(classes, modules)
     mapped = [c for c in classes if res.status(c) == "mapped"]
     models: list[ParsedModel] = []
@@ -1439,8 +1436,6 @@ def _walk_py(root: Path, exclude_globs: Sequence[str]) -> Iterable[Path]:
     (``versions/`` next to an ``env.py``): old revisions often declare
     throwaway copies of the models for data migrations.
     """
-    from .parser import BROAD_SKIP_DIRS
-
     skip = BROAD_SKIP_DIRS | _SKIP_DIRS
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(

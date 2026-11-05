@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [py-1.17.1] - 2026-11-05
+
+> The orm-lens-* pre-commit hooks exist, and the old name says it is old.
+
+### Fixed
+
+- **pre-commit: `orm-lens-nplusone` and `orm-lens-migration-risk` exist.**
+  The orm-lens README on PyPI has shown these hook ids since 1.16.0, but
+  `.pre-commit-hooks.yaml` only defined the `django-orm-lens-*` ones, so
+  pre-commit stopped with "No hook with id". Both spellings work now; the old
+  ids name the new one in their output. The hooks run the `orm-lens` command
+  and their environment installs `orm-lens` directly.
+
+### Changed
+
+- **The old name says it is old.** In `django-orm-lens` 1.17.1, the compat
+  package, the `django-orm-lens` and `django-orm-lens-mcp` commands and
+  `python -m django_orm_lens` print a one-line note on stderr pointing at
+  `pip install orm-lens`, and `import django_orm_lens` raises a
+  `DeprecationWarning`. stdout is untouched, so JSON reports and the MCP stdio
+  stream are unaffected; `ORM_LENS_NO_RENAME_NOTICE=1` hides the note.
+- **`django-orm-lens` follows orm-lens 1.x.** It depends on
+  `orm-lens>=1.17.1,<2` instead of one exact release, so installing the old
+  name always brings the current orm-lens, and the compat package is no
+  longer released alongside every orm-lens version.
+- Internal: the `parser` / `sqlalchemy_parser` import cycle is gone
+  ([#213](https://github.com/FROWNINGdev/orm-lens/pull/213)).
+
 ## [py-1.17.0] - 2026-11-04
 
 > Alembic risks over MCP, and composite foreign keys in ER diagrams.
