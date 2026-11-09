@@ -10,6 +10,8 @@ Usage and CI semantics:
 
 Populated-table heuristic: any migration after the app's first (`0001_*`) is assumed to run against a table that already contains rows. Rules marked *populated tables only* stay silent in an app's initial migration. Rules that cross-reference the current `models.py` degrade to a low-confidence `*_unverified` variant when the workspace schema cannot be parsed.
 
+How the rules hold up on real projects: [407 alarms on six big Django codebases, and why 405 of them were wrong](../articles/407-migration-alarms.md).
+
 ## add_field_not_null_no_default
 
 **Operation:** `AddField` · **Severity:** critical · **Confidence:** high · *populated tables only*

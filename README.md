@@ -472,7 +472,7 @@ so the agent can self-correct. Optional sandbox via
 ### Agent skill
 
 The tools tell an agent what is true; the skill tells it what to do with
-that. [`skills/orm-lens`](skills/orm-lens) is a SKILL.md
+that. [`skills/orm-lens`](skills/orm-lens/SKILL.md) is a SKILL.md
 package with playbooks for migration review, safe renames and removals,
 N+1 fixes and cascade checks, a safe rewrite for each of the 16 migration
 rules, and `audit.py` for a one-command verdict (BLOCK / FIX BEFORE DEPLOY /
@@ -518,7 +518,7 @@ jobs:
 
 The comment goes up **before** the job fails, so a blocked PR still explains why. `only-changed` reads the PR's file list from the API rather than `git diff`, because `actions/checkout` defaults to `fetch-depth: 1` and the base commit is not in the local history. On `push` events both flags skip with a notice instead of failing, so one workflow covers both triggers.
 
-> The Action installs from PyPI, so `blast-radius` and `drift` need **py-1.7.0** or later — pin it with `version: 1.7.0` if your workflow must not drift. To run an unreleased build instead, add `install: false` and install the source yourself; [this repo's own workflow](.github/workflows/schema-review.yml) does exactly that, and is what verifies the Action on every PR.
+> The Action installs from PyPI, so `blast-radius` and `drift` need **py-1.7.0** or later — pin it with `version: 1.7.0` if your workflow must not drift. To run an unreleased build instead, add `install: false` and install the source yourself; [this repo's own workflow](https://github.com/FROWNINGdev/orm-lens/blob/main/.github/workflows/schema-review.yml) does exactly that, and is what verifies the Action on every PR.
 
 
 **pre-commit** — two hooks, nothing to install locally:
@@ -689,15 +689,15 @@ Eighteen editor-side checks (`DOL001`–`DOL041`) with Ruff-style codes, per-rul
 
 | Category | Rules | Examples |
 |---|---|---|
-| [Queryset](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/rules/README.md) | `DOL001`–`DOL007` | `.count() > 0` → `.exists()`, FK access in loops (N+1) |
-| [Model definition](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/rules/README.md) | `DOL011`–`DOL015` | `ForeignKey` without `on_delete`, `null=True` on string fields |
-| [Datetime](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/rules/README.md) | `DOL021`–`DOL022` | `datetime.now()` → `timezone.now()` |
-| [Forms / views](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/rules/README.md) | `DOL031`–`DOL032` | `locals()` in `render()`, `Meta.fields = '__all__'` |
-| [Raw SQL](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/rules/DOL041.md) | `DOL041` | `SET enable_hashjoin = off`, `plan_cache_mode`, `jit` overrides in app code |
-| [Migration risks](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/rules/migrations.md) | 16 rules | NOT NULL add without default, table-locking index builds, irreversible data migrations |
-| [Static N+1](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/rules/nplusone.md) | 1 analyzer | FK/M2M access in loops without `select_related` / `prefetch_related` |
+| [Queryset](docs/rules/README.md) | `DOL001`–`DOL007` | `.count() > 0` → `.exists()`, FK access in loops (N+1) |
+| [Model definition](docs/rules/README.md) | `DOL011`–`DOL015` | `ForeignKey` without `on_delete`, `null=True` on string fields |
+| [Datetime](docs/rules/README.md) | `DOL021`–`DOL022` | `datetime.now()` → `timezone.now()` |
+| [Forms / views](docs/rules/README.md) | `DOL031`–`DOL032` | `locals()` in `render()`, `Meta.fields = '__all__'` |
+| [Raw SQL](docs/rules/DOL041.md) | `DOL041` | `SET enable_hashjoin = off`, `plan_cache_mode`, `jit` overrides in app code |
+| [Migration risks](docs/rules/migrations.md) | 16 rules | NOT NULL add without default, table-locking index builds, irreversible data migrations |
+| [Static N+1](docs/rules/nplusone.md) | 1 analyzer | FK/M2M access in loops without `select_related` / `prefetch_related` |
 
-→ **[Full rule reference](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/rules/README.md)** — every code with bad/good examples, QuickFix behaviour, and suppression syntax.
+→ **[Full rule reference](docs/rules/README.md)** — every code with bad/good examples, QuickFix behaviour, and suppression syntax.
 
 ### Suppress inline
 

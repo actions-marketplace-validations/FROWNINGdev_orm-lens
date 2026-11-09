@@ -23,6 +23,39 @@
 
 <link rel="icon" type="image/png" href="/orm-lens/media/icon.png">
 
+{% comment %}
+  jekyll-seo-tag only describes the homepage as a WebSite. This block says
+  what the site is about: a free developer tool, and the same product as the
+  GitHub repo, the PyPI package and the two extension listings (sameAs).
+  Homepage only: README.html points its canonical at the homepage anyway.
+{% endcomment %}
+{% if page.url == "/" %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "ORM Lens",
+  "alternateName": "django-orm-lens",
+  "description": {{ site.description | strip | jsonify }},
+  "url": "https://frowningdev.github.io/orm-lens/",
+  "image": "https://frowningdev.github.io/orm-lens/media/hero.png",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Windows, macOS, Linux",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "author": { "@type": "Person", "name": "FROWNINGdev", "url": "https://github.com/FROWNINGdev" },
+  "downloadUrl": "https://pypi.org/project/orm-lens/",
+  "sameAs": [
+    "https://github.com/FROWNINGdev/orm-lens",
+    "https://pypi.org/project/orm-lens/",
+    "https://marketplace.visualstudio.com/items?itemName=frowningdev.django-orm-lens",
+    "https://open-vsx.org/extension/frowningdev/django-orm-lens"
+  ]
+}
+</script>
+{% endif %}
+
 <script type="module">
   import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
 
