@@ -74,6 +74,11 @@ NON_MODEL_TAIL = re.compile(
     r"Backend|Command)$"
 )
 
+# ``name = models.Manager()`` declares a manager, not a column. FIELD_RE
+# matches any ``models.<Name>(``, so these need an explicit skip in
+# _collect_defs. TaggableManager is a real relation and must stay a field.
+_NOT_A_FIELD = frozenset({"Manager", "QuerySet"})
+
 BARE_FIELD_TYPES = "|".join(
     [
         "CharField", "TextField", "SlugField", "EmailField", "URLField", "UUIDField",
@@ -583,6 +588,9 @@ def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
             if fm:
                 fname, ftype = fm.group(1), fm.group(2)
                 args_block, end_idx = _read_balanced_args(lines, j)
+                if ftype in _NOT_A_FIELD:
+                    j = end_idx + 1
+                    continue
                 relation_kind = (
                     "ManyToManyField"
                     if ftype == "TaggableManager"

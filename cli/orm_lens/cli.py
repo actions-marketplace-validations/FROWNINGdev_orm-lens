@@ -630,16 +630,38 @@ def _cascade_suffix(entry: dict) -> str:
 
 def _build_mermaid(index: WorkspaceIndex) -> str:
     lines: list[str] = ["erDiagram"]
-    model_names = {m.name for app in index.apps for m in app.models}
+    # Apps that define each bare model name, in scan order.
+    apps_by_name: dict[str, list[str]] = {}
+    for app in index.apps:
+        for m in app.models:
+            apps_by_name.setdefault(m.name, []).append(app.name)
     user_model = find_user_model(index)
     user_model_name = user_model.name if user_model else None
 
     def safe(s: str) -> str:
         return "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in s)
 
+    def entity(app_name: str, model_name: str) -> str:
+        # Mermaid has one namespace for entities: a class name defined in
+        # several apps (basket.Line, order.Line) gets its app as a prefix,
+        # every other entity keeps its bare name.
+        if len(apps_by_name.get(model_name, ())) > 1:
+            return safe(f"{app_name}.{model_name}")
+        return safe(model_name)
+
+    def target_app(related_model: str, tail: str, source_app: str) -> str:
+        apps = apps_by_name[tail]
+        if "." in related_model:
+            label = related_model.rsplit(".", 1)[0]
+            if label in apps:
+                return label
+        if source_app in apps:
+            return source_app
+        return apps[0]
+
     for app in index.apps:
         for model in app.models:
-            lines.append(f"  {safe(model.name)} {{")
+            lines.append(f"  {entity(app.name, model.name)} {{")
             for f in _er_columns(model):
                 if f.is_relation:
                     continue
@@ -656,13 +678,15 @@ def _build_mermaid(index: WorkspaceIndex) -> str:
             for f in _er_columns(model):
                 if not f.is_relation or not f.related_model:
                     continue
-                target = (
-                    model.name
-                    if f.related_model == "self"
-                    else resolve_related_tail(f.related_model, user_model_name)
-                )
-                if target not in model_names:
-                    continue
+                if f.related_model == "self":
+                    target = entity(app.name, model.name)
+                else:
+                    tail = resolve_related_tail(f.related_model, user_model_name)
+                    if tail is None or tail not in apps_by_name:
+                        continue
+                    target = entity(
+                        target_app(f.related_model, tail, app.name), tail
+                    )
                 if f.relation_kind == "ManyToManyField":
                     arrow = "}o--o{"
                 elif f.relation_kind == "OneToOneField":
@@ -682,7 +706,7 @@ def _build_mermaid(index: WorkspaceIndex) -> str:
                     else parts[0]
                 )
                 lines.append(
-                    f'  {safe(model.name)} {arrow} {safe(target)} : "{label}"'
+                    f'  {entity(app.name, model.name)} {arrow} {target} : "{label}"'
                 )
     return "\n".join(lines)
 

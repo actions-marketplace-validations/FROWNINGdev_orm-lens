@@ -8,7 +8,8 @@ description: >-
 
 # My Django migration linter raised 407 alarms on six big codebases. 405 were wrong
 
-*FROWNINGdev · 31 October 2026*
+*FROWNINGdev · 31 October 2026 · updated 10 November 2026 after a reader
+comment on DEV*
 
 I maintain [orm-lens](https://github.com/FROWNINGdev/orm-lens) (until
 recently django-orm-lens), a static analyzer for Django models and
@@ -149,7 +150,16 @@ fixed with `select_related("organization")`.
 A static analyzer is only as good as its precision on code it has never seen.
 Synthetic test fixtures confirmed that the rules did what I wrote. They could
 not tell me whether what I wrote was true of Django. Big open-source codebases
-can, and running against them is now part of how the rules are tested.
+can, and running against them is now part of how the rules are tested. Each of
+the nine causes above is now its own test case, so a later refactor that
+forgets how Django migrates a populated table fails the suite instead of
+shipping.
+
+The other rule is the one from cause 9: severity follows certainty. When the
+linter cannot prove a risk, because a `RunPython` it cannot see through runs
+first, it says "warning, and here is why I can't be sure" instead of
+"critical". A check that is wrong 405 times out of 407 teaches people to skim
+the whole report, and then the two real findings get skimmed too.
 
 All of the above shipped in py-1.14.0. Try it on your own history:
 

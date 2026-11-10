@@ -131,3 +131,45 @@ def test_cli_include_tests_flag(tmp_path: Path) -> None:
 
     assert run() == []
     assert len(run("--include-tests")) == 1
+
+
+def test_model_reached_through_the_models_module_is_resolved(tmp_path: Path) -> None:
+    # babybuddy: `from core import models` + `models.Nap.objects.all()` was not
+    # resolved, so a scalar `nap.duration.seconds` got select_related advice
+    # (a FieldError at runtime) and the real FK was only `medium`.
+    _write(
+        tmp_path / "core" / "models.py",
+        "from django.db import models\n"
+        "\n"
+        "\n"
+        "class Child(models.Model):\n"
+        "    name = models.CharField(max_length=50)\n"
+        "\n"
+        "\n"
+        "class Nap(models.Model):\n"
+        "    child = models.ForeignKey(Child, on_delete=models.CASCADE)\n"
+        "    duration = models.DurationField()\n",
+    )
+    _write(
+        tmp_path / "core" / "views.py",
+        "from core import models\n"
+        "\n"
+        "\n"
+        "def total_seconds():\n"
+        "    total = 0\n"
+        "    for nap in models.Nap.objects.all():\n"
+        "        total += nap.duration.seconds\n"
+        "    return total\n"
+        "\n"
+        "\n"
+        "def names_loop():\n"
+        "    out = []\n"
+        "    for nap in core.models.Nap.objects.all():\n"
+        "        out.append(nap.child.name)\n"
+        "    return out\n",
+    )
+    schema = {"Child": {"name": "scalar"}, "Nap": {"child": "fk", "duration": "scalar"}}
+    (finding,) = scan_for_nplusone(str(tmp_path), schema)
+    assert finding.accessed == ["child"]
+    assert finding.confidence == "high"
+    assert finding.suggested_fix == '.select_related("child")'

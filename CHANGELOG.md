@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`orm-lens er`: two models with the same class name stay two entities in
+  Mermaid** ([#223](https://github.com/FROWNINGdev/orm-lens/issues/223)).
+  Mermaid has one namespace for entity names, so `basket.Line` and
+  `order.Line` were drawn as one `Line` box with both apps' columns. A class
+  name defined in more than one app is now written as `<app>_<Model>`
+  (`basket_Line`, `order_Line`), and relation ends resolve to the model in
+  the field's own app, or the app named in the reference (`"order.Line"`).
+  Diagrams without duplicate names are unchanged.
+- **nplusone / suggest-indexes: `models.Nap.objects` is a model.** Projects
+  that import the models module (`from core import models`) and write
+  `models.Nap.objects.filter(...)` now get the model resolved like
+  `Nap.objects.filter(...)`: a scalar field such as `nap.duration.seconds` no
+  longer gets `select_related` advice (a `FieldError` at runtime), a real
+  foreign key is reported at `high` confidence, and `suggest-indexes` counts
+  these filter sites (#222).
+- **suggest-indexes: `<fk>_id` and `<fk>` are the same column.** A
+  `Meta.indexes` entry written with the column name (`fields=["category_id",
+  "slug"]`) now covers `filter(category=..., slug=...)`, so the same index is
+  no longer proposed again, and `filter(category_id=...)` and
+  `filter(category=...)` are counted as one field. Only real ForeignKey /
+  OneToOneField names are folded; a plain `external_id` keeps its name (#225).
+- **signals: `@receiver([post_save, post_delete], ...)` produces one edge per signal.** `signal_graph` read the first decorator argument as a single dotted name, so a list or tuple became one `<unknown>` `[custom]` edge and a list-form `post_delete` receiver vanished from the DB_CASCADE `skipped_receivers` warning. `_signal_arg_names` now returns one name per readable element, and the decorator branch adds one edge per name. `<unknown>` remains for the case where nothing is readable. `signal.connect()` is unchanged.
+- **drift: `objects = models.Manager()` is no longer a model field.** Both parsers treated any `models.<Name>(...)` assignment as a field, so an explicit default manager showed up in `scan`, `describe`, ER diagrams, and, worst of all, blocking drift. `Manager` and `QuerySet` are skipped in both `cli/orm_lens/parser.py` and `src/parser.ts`, with the whole call skipped so multi-line declarations do not leak their arguments. `TaggableManager` stays a relation. The saleor golden snapshot drops the `objects` field that its `Category` model declares.
+
 ## [py-1.17.1] - 2026-11-05
 
 > The orm-lens-* pre-commit hooks exist, and the old name says it is old.

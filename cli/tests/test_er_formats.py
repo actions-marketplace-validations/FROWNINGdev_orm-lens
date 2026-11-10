@@ -257,6 +257,102 @@ class SyntheticSchemaTest(unittest.TestCase):
         self.assertIn("product → sku / ForeignKey / PROTECT", dot)
 
 
+class MermaidSameNameModelsTest(unittest.TestCase):
+    """Two apps defining the same class name stay two Mermaid entities (#223)."""
+
+    def _index_for(self, apps: dict[str, str]):
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        for label, models_py in apps.items():
+            app = Path(tmp.name) / label
+            app.mkdir()
+            (app / "__init__.py").write_text("", encoding="utf-8")
+            (app / "models.py").write_text(models_py, encoding="utf-8")
+        return scan_workspace(tmp.name, DEFAULT_EXCLUDES)
+
+    def test_colliding_names_get_their_app_prefix(self) -> None:
+        idx = self._index_for(
+            {
+                "basket": (
+                    "from django.db import models\n"
+                    "class Basket(models.Model):\n"
+                    "    owner = models.CharField(max_length=50)\n"
+                    "class Line(models.Model):\n"
+                    "    basket = models.ForeignKey(Basket, on_delete=models.CASCADE)\n"
+                    "    quantity = models.IntegerField()\n"
+                ),
+                "order": (
+                    "from django.db import models\n"
+                    "class Order(models.Model):\n"
+                    "    number = models.CharField(max_length=20)\n"
+                    "class Line(models.Model):\n"
+                    "    order = models.ForeignKey(Order, on_delete=models.CASCADE)\n"
+                    "    title = models.CharField(max_length=100)\n"
+                ),
+            }
+        )
+        mermaid = _build_mermaid(idx).splitlines()
+        self.assertIn("  basket_Line {", mermaid)
+        self.assertIn("  order_Line {", mermaid)
+        self.assertNotIn("  Line {", mermaid)
+        # Names that are unique stay bare.
+        self.assertIn("  Basket {", mermaid)
+        self.assertIn("  Order {", mermaid)
+        self.assertIn('  basket_Line }o--|| Basket : "basket [CASCADE]"', mermaid)
+        self.assertIn('  order_Line }o--|| Order : "order [CASCADE]"', mermaid)
+        # Each entity keeps only its own columns.
+        body = "\n".join(mermaid)
+        self.assertIn("basket_Line {\n    IntegerField quantity\n  }", body)
+        self.assertIn("order_Line {\n    CharField title\n  }", body)
+
+    def test_edges_to_a_colliding_name_pick_the_right_app(self) -> None:
+        idx = self._index_for(
+            {
+                "basket": (
+                    "from django.db import models\n"
+                    "class Line(models.Model):\n"
+                    "    quantity = models.IntegerField()\n"
+                    "class LineAttribute(models.Model):\n"
+                    "    line = models.ForeignKey(Line, on_delete=models.CASCADE)\n"
+                ),
+                "order": (
+                    "from django.db import models\n"
+                    "class Line(models.Model):\n"
+                    "    title = models.CharField(max_length=100)\n"
+                    "    parent = models.ForeignKey('self', on_delete=models.CASCADE)\n"
+                ),
+                "refund": (
+                    "from django.db import models\n"
+                    "class Refund(models.Model):\n"
+                    "    line = models.ForeignKey('order.Line', on_delete=models.PROTECT)\n"
+                ),
+            }
+        )
+        mermaid = _build_mermaid(idx).splitlines()
+        # Same app as the field wins for a bare name.
+        self.assertIn(
+            '  LineAttribute }o--|| basket_Line : "line [CASCADE]"', mermaid
+        )
+        # 'self' points at the model's own entity.
+        self.assertIn(
+            '  order_Line }o--|| order_Line : "parent [CASCADE]"', mermaid
+        )
+        # An app-qualified reference keeps its app.
+        self.assertIn('  Refund }o--|| order_Line : "line [PROTECT]"', mermaid)
+
+    def test_unique_names_are_unchanged(self) -> None:
+        """Projects without duplicate class names get bare entity names."""
+        index = scan_workspace(str(FIXTURES / "golden" / "saleor"), DEFAULT_EXCLUDES)
+        names = [m.name for app in index.apps for m in app.models]
+        self.assertEqual(len(names), len(set(names)))
+        entities = [
+            line[2:-2]
+            for line in _build_mermaid(index).splitlines()
+            if line.startswith("  ") and line.endswith(" {")
+        ]
+        self.assertEqual(entities, names)
+
+
 class CliWiringTest(unittest.TestCase):
     def test_er_format_flags(self) -> None:
         for fmt, marker in (

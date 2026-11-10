@@ -917,13 +917,6 @@
               "lineNumber": 68,
               "name": "background_image_alt",
               "type": "CharField"
-            },
-            {
-              "args": "",
-              "isRelation": false,
-              "lineNumber": 70,
-              "name": "objects",
-              "type": "Manager"
             }
           ],
           "filePath": "saleor/product/models.py",

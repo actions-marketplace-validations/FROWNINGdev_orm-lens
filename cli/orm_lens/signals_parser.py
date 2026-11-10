@@ -93,12 +93,20 @@ def _extract_receiver_call(dec: ast.AST) -> ast.Call | None:
     return dec
 
 
-def _signal_arg_name(call: ast.Call) -> str | None:
-    """First positional arg of ``receiver(signal, sender=..., ...)`` as a dotted
-    name (``post_save`` or ``orders.signals.order_shipped``)."""
+def _signal_arg_names(call: ast.Call) -> list[str]:
+    """Signal names in the first positional arg of ``receiver(...)``.
+
+    Django accepts one signal (``post_save``) or a list/tuple of them
+    (``[post_save, post_delete]``). Unreadable elements are skipped; when
+    none can be read, returns an empty list and the caller records
+    ``<unknown>`` once.
+    """
     if not call.args:
-        return None
-    return _name_of(call.args[0])
+        return []
+    first = call.args[0]
+    nodes = first.elts if isinstance(first, (ast.List, ast.Tuple)) else [first]
+    names = [_name_of(node) for node in nodes]
+    return [name for name in names if name is not None]
 
 
 def _sender_kwarg(call: ast.Call) -> str | None:
@@ -305,13 +313,15 @@ def signal_graph(
                     handler_fqn = (
                         f"{module_path}.{node.name}" if module_path else node.name
                     )
-                    add_edge(
-                        _signal_arg_name(rcall) or "<unknown>",
-                        _sender_kwarg(rcall),
-                        handler_fqn,
-                        _rel(root_path, py, node.lineno),
-                        "@receiver",
-                    )
+                    signal_names = _signal_arg_names(rcall) or ["<unknown>"]
+                    for signal_name in signal_names:
+                        add_edge(
+                            signal_name,
+                            _sender_kwarg(rcall),
+                            handler_fqn,
+                            _rel(root_path, py, node.lineno),
+                            "@receiver",
+                        )
 
             if isinstance(node, ast.Call):
                 # <signal>.connect(handler, sender=...) — the handler is

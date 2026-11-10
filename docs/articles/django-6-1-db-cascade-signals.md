@@ -8,7 +8,8 @@ description: >-
 
 # Django 6.1's `DB_CASCADE` skips your `post_delete` handlers
 
-*FROWNINGdev · 31 October 2026*
+*FROWNINGdev · 31 October 2026 · updated 10 November 2026 with the outbox and
+shared-file points from a reader comment on DEV*
 
 Django 6.1 added three `on_delete` policies that run in the database instead of
 in Python:
@@ -104,6 +105,15 @@ What the scan does not cover, so you know where to look by hand:
 - **Do the side effect explicitly.** Collect the file names before you delete
   the parent, then remove them after the transaction commits
   (`transaction.on_commit`).
+- **Make it durable if losing one matters.** An `on_commit` callback runs in
+  the same process, so a crash right after the commit loses it and the files
+  stay. Write the file names to a cleanup table in the same transaction as the
+  delete (an outbox), and let a worker remove each object and mark its row
+  done. The worker can retry safely, because deleting an object that is
+  already gone changes nothing.
+- **Check for shared files first.** If two rows can point at the same storage
+  object (copied records, deduplicated uploads), delete the object only when
+  no remaining row references it.
 - **Clean up asynchronously.** A periodic job that deletes storage objects
   with no matching row is slower to converge, but it survives any delete path,
   raw SQL included.

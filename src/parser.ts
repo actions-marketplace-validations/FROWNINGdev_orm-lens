@@ -137,6 +137,10 @@ function detectClassIndent(lines: string[], classLineIdx: number): number {
   return 4;
 }
 
+// `models.Manager()` and `models.QuerySet()` declare managers, not columns.
+// FIELD_RE matches any `models.<Name>(`, so skip these in the model body.
+const NOT_A_FIELD_TYPES = new Set(['Manager', 'QuerySet']);
+
 const BARE_FIELD_TYPES = [
   'CharField', 'TextField', 'SlugField', 'EmailField', 'URLField', 'UUIDField',
   'IntegerField', 'BigIntegerField', 'SmallIntegerField',
@@ -365,6 +369,10 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
         const fieldName = fieldMatch[1];
         const fieldType = fieldMatch[2];
         const { argsBlock, endIdx } = readBalancedArgs(lines, j);
+        if (NOT_A_FIELD_TYPES.has(fieldType)) {
+          j = endIdx + 1;
+          continue;
+        }
         const relationKind =
           fieldType === 'TaggableManager'
             ? 'ManyToManyField'
