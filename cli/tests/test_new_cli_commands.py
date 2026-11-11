@@ -324,6 +324,39 @@ class SuggestIndexesCommandTest(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("'GhostModel' not found", err)
 
+    def test_include_tests_flag(self) -> None:
+        with TemporaryDirectory() as tmp:
+            blog = Path(tmp) / "blog"
+            _write(
+                blog / "models.py",
+                "from django.db import models\n\n\n"
+                "class Article(models.Model):\n"
+                "    status = models.CharField(max_length=20)\n",
+            )
+            _write(
+                blog / "tests" / "test_views.py",
+                "from blog.models import Article\n\n\n"
+                "def test_one():\n"
+                "    return Article.objects.filter(status='draft')\n\n\n"
+                "def test_two():\n"
+                "    return Article.objects.filter(status='published')\n",
+            )
+            # Default: no proposals from test files
+            code, out, _err = _run(
+                ["suggest-indexes", "Article", "--path", tmp, "--format", "json"]
+            )
+            self.assertEqual(code, 0)
+            payload = json.loads(out)
+            self.assertEqual(payload.get("proposed_indexes", []), [])
+
+            # With --include-tests
+            code, out, _err = _run(
+                ["suggest-indexes", "Article", "--path", tmp, "--format", "json", "--include-tests"]
+            )
+            self.assertEqual(code, 0)
+            payload = json.loads(out)
+            self.assertIn(["status"], [p["fields"] for p in payload.get("proposed_indexes", [])])
+
 
 # ---------------------------------------------------------------------------
 # signals

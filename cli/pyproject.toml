@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orm-lens"
-version = "1.17.1"
+version = "1.18.0"
 description = "Static analysis + MCP server for Django and SQLAlchemy models. ER diagrams, N+1, migration risk for Django migrations and Alembic, blast radius and schema drift for CI, terminals and AI agents. No DB, no app boot. Free and MIT."
 readme = "README.md"
 requires-python = ">=3.9"

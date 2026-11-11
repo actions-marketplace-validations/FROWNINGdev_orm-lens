@@ -163,9 +163,65 @@ def _create_model_fields(call: ast.Call) -> list[str]:
     return names
 
 
+def _module_level_lists(tree: ast.AST) -> dict[str, ast.expr]:
+    """Module-scope ``NAME = [...]`` bindings, by name.
+
+    Hand-written migrations sometimes hoist a shared operations list into a
+    constant and pass it as ``state_operations=NAME``. Those are statically
+    determinable, so resolve them instead of dropping the wrapper contents.
+    """
+    lists: dict[str, ast.expr] = {}
+    for node in getattr(tree, "body", []):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            value = node.value
+            names = [node.target.id] if isinstance(node.target, ast.Name) else []
+        else:
+            continue
+        if isinstance(value, (ast.List, ast.Tuple)):
+            for name in names:
+                lists[name] = value
+    return lists
+
+
+def _state_operations(elts: list[ast.expr], constants: dict[str, ast.expr]) -> list[ast.Call]:
+    """Flatten ``SeparateDatabaseAndState`` into the operations it wraps.
+
+    Django builds project state from ``state_operations`` only; the wrapper
+    is the standard way to move a model between apps or to change state
+    without touching the table. ``database_operations`` is SQL-only and must
+    not seed fields.
+
+    A literal list, a tuple, or a module-level name bound to one is replayed;
+    anything else (a call, a comprehension, a name we cannot resolve) is
+    skipped, like every other construct this parser cannot evaluate.
+    """
+    out: list[ast.Call] = []
+    for elt in elts:
+        if not isinstance(elt, ast.Call):
+            continue
+        if _op_name(elt) == "SeparateDatabaseAndState":
+            # Signature: (database_operations, state_operations) — real
+            # projects use the keyword form, but the positional one is cheap.
+            state_node = elt.args[1] if len(elt.args) > 1 else None
+            for kw in elt.keywords:
+                if kw.arg == "state_operations":
+                    state_node = kw.value
+            while isinstance(state_node, ast.Name) and state_node.id in constants:
+                state_node = constants[state_node.id]
+            if isinstance(state_node, (ast.List, ast.Tuple)):
+                out.extend(_state_operations(state_node.elts, constants))
+            continue
+        out.append(elt)
+    return out
+
+
 def _operations(tree: ast.AST) -> list[ast.Call]:
     """Every call inside a ``Migration.operations = [...]`` list."""
     out: list[ast.Call] = []
+    constants = _module_level_lists(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
@@ -173,7 +229,7 @@ def _operations(tree: ast.AST) -> list[ast.Call]:
         if "operations" not in targets:
             continue
         if isinstance(node.value, (ast.List, ast.Tuple)):
-            out.extend(e for e in node.value.elts if isinstance(e, ast.Call))
+            out.extend(_state_operations(node.value.elts, constants))
     return out
 
 

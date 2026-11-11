@@ -286,6 +286,27 @@ class ForeignKeyColumnAliasTest(unittest.TestCase):
             self.assertEqual(fields.get("external_id"), 2)
             self.assertIn(["external_id"], [p["fields"] for p in result["proposed_indexes"]])
 
+    def test_skips_test_files_by_default(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(root / "shop" / "models.py", _SHOP_MODELS)
+            _write(
+                root / "shop" / "tests" / "test_products.py",
+                "from shop.models import Product\n"
+                "def test_lookup_by_name():\n"
+                "    assert Product.objects.filter(name='Mug').exists()\n"
+                "def test_get_by_name():\n"
+                "    Product.objects.get(name='Mug')\n",
+            )
+
+            result_default = suggest_indexes("shop", "Product", str(root))
+            self.assertEqual(result_default.get("proposed_indexes", []), [])
+            self.assertEqual(result_default.get("filter_usages", []), [])
+
+            result_included = suggest_indexes("shop", "Product", str(root), include_tests=True)
+            proposed = [p["fields"] for p in result_included.get("proposed_indexes", [])]
+            self.assertIn(["name"], proposed)
+
 
 if __name__ == "__main__":
     unittest.main()

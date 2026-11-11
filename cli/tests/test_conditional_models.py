@@ -160,5 +160,151 @@ class OtherBlockStatementsTest(unittest.TestCase):
         )
 
 
+OSCAR_BASKET_SHAPE = '''
+from django.db import models
+from oscar.core.loading import is_model_registered
+
+
+class InvalidBasketLineError(Exception):
+    pass
+
+
+if not is_model_registered("basket", "Basket"):
+
+    class Basket(AbstractBasket):
+        owner = models.CharField(max_length=50)
+
+
+if not is_model_registered("basket", "Line"):
+
+    class Line(AbstractLine):
+        quantity = models.PositiveIntegerField()
+
+
+if not is_model_registered("basket", "LineAttribute"):
+
+    class LineAttribute(AbstractLineAttribute):
+        value = models.CharField(max_length=255)
+'''
+
+
+class PlainClassBeforeBlocksTest(unittest.TestCase):
+    """A column-0 non-model class must not swallow the blocks after it (#226)."""
+
+    def test_oscar_basket_shape_finds_every_model(self) -> None:
+        got = parse_models_file("basket/models.py", OSCAR_BASKET_SHAPE)
+        self.assertEqual([m.name for m in got], ["Basket", "Line", "LineAttribute"])
+        self.assertEqual(
+            [[f.name for f in m.fields] for m in got],
+            [["owner"], ["quantity"], ["value"]],
+        )
+
+    def test_issue_repro(self) -> None:
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "\n"
+            "class OutOfStock(Exception):\n"
+            "    pass\n"
+            "\n"
+            "\n"
+            "if True:\n"
+            "\n"
+            "    class Basket(models.Model):\n"
+            "        owner = models.CharField(max_length=50)\n"
+        )
+        got = parse_models_file("shop/models.py", src)
+        self.assertEqual([m.name for m in got], ["Basket"])
+        self.assertEqual([f.name for f in got[0].fields], ["owner"])
+
+    def test_model_before_a_function_and_a_block(self) -> None:
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "class A(models.Model):\n"
+            "    a = models.IntegerField()\n"
+            "\n"
+            "def helper():\n"
+            "    b = models.IntegerField()\n"
+            "\n"
+            "@register\n"
+            "class B(models.Model):\n"
+            "    c = models.IntegerField()\n"
+        )
+        got = parse_models_file("a/models.py", src)
+        self.assertEqual([m.name for m in got], ["A", "B"])
+        self.assertEqual([[f.name for f in m.fields] for m in got], [["a"], ["c"]])
+
+    def test_column0_comment_and_docstring_line_stay_in_the_body(self) -> None:
+        """Comments and multi-line string lines at column 0 don't end a class."""
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "class Order(models.Model):\n"
+            "    number = models.CharField(max_length=32)\n"
+            "# a column-0 comment inside the body\n"
+            "    total = models.DecimalField(max_digits=12, decimal_places=2)\n"
+            "\n"
+            "    def describe(self):\n"
+            "        return \"\"\"\n"
+            "Order summary, written at column 0.\n"
+            "\"\"\"\n"
+            "\n"
+            "    status = models.CharField(max_length=16)\n"
+        )
+        got = parse_models_file("shop/models.py", src)
+        self.assertEqual([m.name for m in got], ["Order"])
+        self.assertEqual(
+            [f.name for f in got[0].fields], ["number", "total", "status"]
+        )
+
+    def test_column0_string_line_starting_with_a_keyword_stays_in_the_body(
+        self,
+    ) -> None:
+        """A docstring line like ``if needed, ...`` at column 0 isn't an ``if``."""
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "class Order(models.Model):\n"
+            '    """Orders.\n'
+            "\n"
+            "if needed, the total is recomputed on save.\n"
+            "for example: Order(total=0)\n"
+            "@see Basket\n"
+            '"""\n'
+            "    number = models.CharField(max_length=32)\n"
+            "\n"
+            "    def describe(self):\n"
+            "        return '''\n"
+            "with a column-0 'with' line\n"
+            "'''\n"
+            "    status = models.CharField(max_length=16)\n"
+            "\n"
+            "def helper():\n"
+            "    other = models.IntegerField()\n"
+        )
+        got = parse_models_file("shop/models.py", src)
+        self.assertEqual([m.name for m in got], ["Order"])
+        self.assertEqual([f.name for f in got[0].fields], ["number", "status"])
+
+    def test_quotes_in_comments_and_strings_do_not_open_a_string(self) -> None:
+        """A quote inside a comment or a closed string doesn't hide a real ``if``."""
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "class OutOfStock(Exception):\n"
+            "    # don't treat this apostrophe as a string\n"
+            "    msg = \"it's \\\" gone\"\n"
+            "\n"
+            "if True:\n"
+            "\n"
+            "    class Basket(models.Model):\n"
+            "        owner = models.CharField(max_length=50)\n"
+        )
+        got = parse_models_file("shop/models.py", src)
+        self.assertEqual([m.name for m in got], ["Basket"])
+        self.assertEqual([f.name for f in got[0].fields], ["owner"])
+
+
 if __name__ == "__main__":
     unittest.main()

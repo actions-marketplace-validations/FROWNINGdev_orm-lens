@@ -3,7 +3,7 @@
   "name": "io.github.FROWNINGdev/orm-lens",
   "title": "ORM Lens",
   "description": "Django and SQLAlchemy static analysis: models, relations, migrations, Alembic, N+1.",
-  "version": "1.17.1",
+  "version": "1.18.0",
   "repository": {
     "url": "https://github.com/FROWNINGdev/orm-lens",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "orm-lens",
-      "version": "1.17.1",
+      "version": "1.18.0",
       "transport": {
         "type": "stdio"
       },

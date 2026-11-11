@@ -175,7 +175,7 @@ test('ManyToMany emits post_generation hook', () => {
   assert.match(code, /self\.tags\.add\(item\)/);
 });
 
-test('choices=... field prefers Iterator with TODO', () => {
+test('choices= named constant uses Iterator over values with an import TODO', () => {
   const model = {
     name: 'Order',
     appName: 'shop',
@@ -188,6 +188,84 @@ test('choices=... field prefers Iterator with TODO', () => {
     ],
   };
   const code = generateFactoryCode(model, indexOf(model));
+  assert.match(code, /status = factory\.Iterator\(\[value for value, _label in STATUS_CHOICES\]\)/);
+  assert.match(code, /TODO: import STATUS_CHOICES/);
+});
+
+test('choices= Kind.choices uses Kind.values', () => {
+  const model = {
+    name: 'Order',
+    appName: 'shop',
+    filePath: '/shop/models.py',
+    lineNumber: 1,
+    baseClasses: ['models.Model'],
+    meta: {},
+    fields: [
+      { name: 'kind', type: 'CharField', args: "max_length=1, choices=Kind.choices, default=Kind.PHYSICAL", isRelation: false, lineNumber: 3 },
+    ],
+  };
+  const code = generateFactoryCode(model, indexOf(model));
+  assert.match(code, /kind = factory\.Iterator\(Kind\.values\)/);
+  assert.doesNotMatch(code, /TODO: fill from Kind\.choices/);
+  assert.match(code, /TODO: import Kind \(or <Model>\.Kind if it is nested\)/);
+});
+
+test('choices= inline pairs use the first element of each pair', () => {
+  const model = {
+    name: 'Order',
+    appName: 'shop',
+    filePath: '/shop/models.py',
+    lineNumber: 1,
+    baseClasses: ['models.Model'],
+    meta: {},
+    fields: [
+      { name: 'size', type: 'CharField', args: 'max_length=1, choices=[("s", "Small"), ("l", "Large")]', isRelation: false, lineNumber: 4 },
+    ],
+  };
+  const code = generateFactoryCode(model, indexOf(model));
+  assert.match(code, /size = factory\.Iterator\(\["s", "l"\]\)/);
+});
+
+test('choices= call or grouped list keeps the Iterator TODO placeholder', () => {
+  const model = {
+    name: 'Order',
+    appName: 'shop',
+    filePath: '/shop/models.py',
+    lineNumber: 1,
+    baseClasses: ['models.Model'],
+    meta: {},
+    fields: [
+      { name: 'status', type: 'CharField', args: "choices=get_status_choices()", isRelation: false, lineNumber: 2 },
+      { name: 'media', type: 'CharField', args: 'choices=[("Audio", [("vinyl", "Vinyl"), ("cd", "CD")])]', isRelation: false, lineNumber: 3 },
+    ],
+  };
+  const code = generateFactoryCode(model, indexOf(model));
   assert.match(code, /status = factory\.Iterator\(\[\.\.\.\]\)/);
-  assert.match(code, /TODO: fill from STATUS_CHOICES/);
+  assert.match(code, /TODO: fill from get_status_choices/);
+  assert.match(code, /media = factory\.Iterator\(\[\.\.\.\]\)/);
+});
+
+test('choices= expression that continues after the name or list keeps the placeholder', () => {
+  const model = {
+    name: 'Order',
+    appName: 'shop',
+    filePath: '/shop/models.py',
+    lineNumber: 1,
+    baseClasses: ['models.Model'],
+    meta: {},
+    fields: [
+      { name: 'status', type: 'CharField', args: 'max_length=20, choices=STATUS_CHOICES + EXTRA_CHOICES', isRelation: false, lineNumber: 2 },
+      { name: 'size', type: 'CharField', args: 'choices=[("s", "Small")] + OTHER, max_length=1', isRelation: false, lineNumber: 3 },
+      { name: 'stage', type: 'CharField', args: 'choices=STAGE_CHOICES[:2]', isRelation: false, lineNumber: 4 },
+      { name: 'kind', type: 'CharField', args: 'choices=Kind.choices , max_length=1', isRelation: false, lineNumber: 5 },
+    ],
+  };
+  const code = generateFactoryCode(model, indexOf(model));
+  assert.match(code, /status = factory\.Iterator\(\[\.\.\.\]\)/);
+  assert.match(code, /size = factory\.Iterator\(\[\.\.\.\]\)/);
+  assert.match(code, /stage = factory\.Iterator\(\[\.\.\.\]\)/);
+  assert.doesNotMatch(code, /in STATUS_CHOICES\]/);
+  assert.doesNotMatch(code, /in STAGE_CHOICES\]/);
+  assert.doesNotMatch(code, /Iterator\(\["s"\]\)/);
+  assert.match(code, /kind = factory\.Iterator\(Kind\.values\)/);
 });

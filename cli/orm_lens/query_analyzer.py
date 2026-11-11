@@ -590,6 +590,7 @@ def suggest_indexes(
     model_name: str,
     root: str,
     index: WorkspaceIndex | None = None,
+    include_tests: bool = False,
 ) -> dict[str, Any]:
     """Analyse the workspace for QuerySet usage of ``app_label.model_name``.
 
@@ -630,6 +631,13 @@ def suggest_indexes(
     all_aggregate: list[dict[str, Any]] = []
 
     for py in _iter_py_files(root_path):
+        if not include_tests:
+            try:
+                rel = py.relative_to(root_path)
+            except ValueError:
+                rel = py
+            if _is_test_file(rel):
+                continue
         try:
             source = py.read_text(encoding="utf-8", errors="replace")
         except OSError:

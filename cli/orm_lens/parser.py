@@ -476,6 +476,56 @@ def parse_models_file(file_path: str, content: str) -> list[ParsedModel]:
     return _resolve_and_filter(_collect_defs(file_path, content))
 
 
+# Column-0 statements that can't be part of a column-0 class body: the block
+# headers ``_encloses_only_blocks`` walks through, plus ``def``, ``async def``
+# and decorators.
+_COLUMN0_STATEMENT_RE = re.compile(
+    r"^(?:(?:if|elif|while|for|try|with|async\s+(?:def|for|with)|def)\b"
+    r"|(?:else|except|finally)\b|@)"
+)
+
+
+def _lines_inside_strings(lines: Sequence[str]) -> frozenset[int]:
+    """Return the indexes of lines that start inside a multi-line string.
+
+    A light scanner, not ``tokenize``: model files that don't fully parse
+    still need a best-effort answer. It follows ``#`` comments, single and
+    triple quotes and backslash escapes, so a column-0 line of docstring
+    text such as ``if needed, ...`` isn't mistaken for a statement.
+    """
+    inside: set[int] = set()
+    quote = ""  # the open string's delimiter: ', ", ''' or """
+    for idx, line in enumerate(lines):
+        if quote:
+            inside.add(idx)
+        k = 0
+        n = len(line)
+        while k < n:
+            ch = line[k]
+            if quote:
+                if ch == "\\":
+                    k += 2
+                    continue
+                if line.startswith(quote, k):
+                    k += len(quote)
+                    quote = ""
+                    continue
+                k += 1
+                continue
+            if ch == "#":
+                break
+            if ch in "'\"":
+                triple = ch * 3
+                quote = triple if line.startswith(triple, k) else ch
+                k += len(quote)
+                continue
+            k += 1
+        # A single-quoted string only continues past a trailing backslash.
+        if len(quote) == 1 and not line.endswith("\\"):
+            quote = ""
+    return frozenset(inside)
+
+
 def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
     """Pass 1 only: collect every class def (name, bases, fields, Meta).
 
@@ -495,6 +545,9 @@ def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
     # detected. Line numbers are preserved (per-line expansion only).
     lines = [line.expandtabs(4) for line in content.splitlines()]
     all_defs: list[ParsedModel] = []
+    # Built on first use: only column-0 classes followed by a column-0
+    # statement-looking line need it.
+    in_string: frozenset[int] | None = None
     parent = os.path.basename(os.path.dirname(file_path))
     if parent == "models":
         app_name = os.path.basename(os.path.dirname(os.path.dirname(file_path)))
@@ -566,6 +619,18 @@ def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
                 break
             if re.match(r"^class\s+", inner) and not re.match(r"^\s+class", inner):
                 break
+            # A column-0 block opener (the swappable-model ``if``), function
+            # or decorator also ends a column-0 class. Without it the body of
+            # a plain class (``class OutOfStock(Exception)``) ran over every
+            # following ``if not is_model_registered(...)`` block and hid the
+            # models inside them (#226). Column-0 comments and blank lines
+            # still stay inside the body, and so do column-0 lines of a
+            # multi-line string, even when they start with ``if`` or ``for``.
+            if not class_indent and _COLUMN0_STATEMENT_RE.match(inner):
+                if in_string is None:
+                    in_string = _lines_inside_strings(lines)
+                if j not in in_string:
+                    break
             if not inner.strip():
                 j += 1
                 continue
@@ -677,9 +742,32 @@ def _is_abstract(model: ParsedModel) -> bool:
     return model.meta.get("abstract", "").strip() in ("True", "1", "true")
 
 
+def _pick_base(
+    candidates: list[ParsedModel], model: ParsedModel
+) -> ParsedModel | None:
+    """Choose which same-named class ``model``'s base refers to.
+
+    A base in the subclass's own directory wins (``order/models.py`` →
+    ``order/abstract_models.py``). Failing that, a base in the same app
+    (``order/models/line.py`` → ``order/abstract_models.py``) wins. Otherwise
+    the first definition, as before.
+    """
+    if not candidates:
+        return None
+    here = Path(model.file_path).parent
+    for c in candidates:
+        if Path(c.file_path).parent == here:
+            return c
+    app_dir = _app_dir_for(model.file_path)[0]
+    for c in candidates:
+        if _app_dir_for(c.file_path)[0] == app_dir:
+            return c
+    return candidates[0]
+
+
 def _abstract_bases_fields(
     model: ParsedModel,
-    by_name: dict[str, ParsedModel],
+    by_name: dict[str, list[ParsedModel]],
     stack: tuple[str, ...] = (),
 ) -> list[ParsedField]:
     """Fields ``model`` inherits from its abstract bases, parent-first.
@@ -700,7 +788,7 @@ def _abstract_bases_fields(
         tail = base.split(".")[-1]
         if tail in stack:
             continue
-        parent = by_name.get(tail)
+        parent = _pick_base(by_name.get(tail, []), model)
         if parent is None or parent is model or not _is_abstract(parent):
             continue
         contributed = [
@@ -726,11 +814,11 @@ def _attach_inherited_fields(all_defs: list[ParsedModel]) -> None:
     the list. A field the class declares itself shadows the inherited one of
     the same name, exactly as an override does in Django.
     """
-    by_name: dict[str, ParsedModel] = {}
+    by_name: dict[str, list[ParsedModel]] = {}
     for m in all_defs:
-        # First definition wins when two files declare the same class name;
-        # the parser has no import graph to disambiguate with.
-        by_name.setdefault(m.name, m)
+        # Keep every definition per name; ``_pick_base`` chooses one per
+        # subclass. The parser has no import graph to disambiguate with yet.
+        by_name.setdefault(m.name, []).append(m)
     for m in all_defs:
         own = {f.name for f in m.fields}
         m.inherited_fields = [

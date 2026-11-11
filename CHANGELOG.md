@@ -7,8 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [py-1.18.0] - 2026-11-11
+
+> Fewer false drift alarms on django-oscar-style and moved models.
+
 ### Fixed
 
+- **A plain class above `if not is_model_registered(...)` no longer hides the
+  models below it** ([#226](https://github.com/FROWNINGdev/orm-lens/issues/226)).
+  The body of a column-0 class only ended at the next column-0 `class`, so in
+  django-oscar's `basket/models.py` the `InvalidBasketLineError` exception
+  swallowed `Basket`, `Line` and `LineAttribute`, and `drift` reported them as
+  undeclared. A column-0 `if` / `elif` / `else` / `for` / `while` / `try` /
+  `except` / `finally` / `with` / `def` / `async` / decorator line now ends a
+  column-0 class too, unless it is inside a multi-line string (a docstring line
+  such as `if needed, ...`). Column-0 comments and other column-0 text still
+  stay in the body.
+- **`orm-lens drift`: models created inside `SeparateDatabaseAndState` count as
+  migrated** ([#220](https://github.com/FROWNINGdev/orm-lens/issues/220)).
+  Replay read only the top-level operations, so a model moved between apps
+  through `state_operations` was reported as "declared but never migrated".
+  `state_operations` (a literal list, a tuple or a module-level name bound to
+  one) is now replayed; `database_operations` still never changes state.
+- **`suggest-indexes` skips test modules by default**
+  ([#224](https://github.com/FROWNINGdev/orm-lens/issues/224)). Filters that
+  only tests run no longer produce index proposals for production models.
+  `--include-tests` brings them back.
+- **Abstract bases with the same class name no longer swap fields**
+  ([#227](https://github.com/FROWNINGdev/orm-lens/issues/227)). When two
+  apps defined an abstract base with the same name (for example
+  `AbstractLine` in django-oscar's `basket` and `order` apps), every subclass
+  inherited the fields of whichever base was scanned first. A subclass now
+  inherits from the base in its own directory, and falls back to the first
+  definition as before.
 - **`orm-lens er`: two models with the same class name stay two entities in
   Mermaid** ([#223](https://github.com/FROWNINGdev/orm-lens/issues/223)).
   Mermaid has one namespace for entity names, so `basket.Line` and
@@ -31,6 +62,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `filter(category=...)` are counted as one field. Only real ForeignKey /
   OneToOneField names are folded; a plain `external_id` keeps its name (#225).
 - **signals: `@receiver([post_save, post_delete], ...)` produces one edge per signal.** `signal_graph` read the first decorator argument as a single dotted name, so a list or tuple became one `<unknown>` `[custom]` edge and a list-form `post_delete` receiver vanished from the DB_CASCADE `skipped_receivers` warning. `_signal_arg_names` now returns one name per readable element, and the decorator branch adds one edge per name. `<unknown>` remains for the case where nothing is readable. `signal.connect()` is unchanged.
+- **drift: `objects = models.Manager()` is no longer a model field.** Both parsers treated any `models.<Name>(...)` assignment as a field, so an explicit default manager showed up in `scan`, `describe`, ER diagrams, and, worst of all, blocking drift. `Manager` and `QuerySet` are skipped in both `cli/orm_lens/parser.py` and `src/parser.ts`, with the whole call skipped so multi-line declarations do not leak their arguments. `TaggableManager` stays a relation. The saleor golden snapshot drops the `objects` field that its `Category` model declares.
+
+## [0.22.0] - 2026-11-11
+
+> Generated factories fill choices= fields with real values.
+
+### Added
+
+- **Generate factory_boy factory: `choices=` fields get a real `factory.Iterator`.** `Kind.choices` becomes `Kind.values` (with a `# TODO: import Kind` comment), a named list such as `STATUS_CHOICES` becomes `[value for value, _label in STATUS_CHOICES]` (with a `# TODO: import ...` comment), and an inline list of pairs uses the first element of each pair. Calls and grouped choices still get the `[...]  # TODO` placeholder (#228).
+
+### Fixed
+
 - **drift: `objects = models.Manager()` is no longer a model field.** Both parsers treated any `models.<Name>(...)` assignment as a field, so an explicit default manager showed up in `scan`, `describe`, ER diagrams, and, worst of all, blocking drift. `Manager` and `QuerySet` are skipped in both `cli/orm_lens/parser.py` and `src/parser.ts`, with the whole call skipped so multi-line declarations do not leak their arguments. `TaggableManager` stays a relation. The saleor golden snapshot drops the `objects` field that its `Category` model declares.
 
 ## [py-1.17.1] - 2026-11-05

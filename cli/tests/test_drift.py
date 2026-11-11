@@ -100,6 +100,74 @@ class ReplayTest(unittest.TestCase):
         state, _ = replay_app(self.migrations)
         self.assertEqual(state, {"article": {"title"}})
 
+    def test_state_operations_inside_a_wrapper_are_replayed(self) -> None:
+        # Django builds project state from `state_operations`; the wrapper is
+        # how a model moves between apps without touching the table, so what
+        # it contains has to count as migrated.
+        self._write(
+            "0001_initial.py",
+            "        migrations.SeparateDatabaseAndState(\n"
+            "            state_operations=[\n"
+            '                migrations.CreateModel(name="Entry", fields=[\n'
+            '                    ("action", None), ("message", None),\n'
+            "                ]),\n"
+            "            ],\n"
+            "            database_operations=[],\n"
+            "        ),\n",
+        )
+        state, _ = replay_app(self.migrations)
+        self.assertEqual(state, {"entry": {"action", "message"}})
+
+    def test_state_operations_are_read_positionally(self) -> None:
+        # SeparateDatabaseAndState(database_operations, state_operations).
+        self._write(
+            "0001_initial.py",
+            "        migrations.SeparateDatabaseAndState(\n"
+            "            [],\n"
+            "            [migrations.CreateModel(name='Entry', fields=[('action', None)])],\n"
+            "        ),\n",
+        )
+        state, _ = replay_app(self.migrations)
+        self.assertEqual(state, {"entry": {"action"}})
+
+    def test_database_operations_do_not_change_state(self) -> None:
+        # `database_operations` are SQL-only; Django's state never sees them.
+        self._write(
+            "0001_initial.py",
+            '        migrations.CreateModel(name="Post", fields=[("title", None)]),\n',
+        )
+        self._write(
+            "0002_x.py",
+            "        migrations.SeparateDatabaseAndState(\n"
+            "            state_operations=[],\n"
+            "            database_operations=[\n"
+            '                migrations.RenameModel(old_name="Post", new_name="Article"),\n'
+            "            ],\n"
+            "        ),\n",
+        )
+        state, _ = replay_app(self.migrations)
+        self.assertEqual(state, {"post": {"title"}})
+
+    def test_state_operations_bound_to_a_module_level_name_are_replayed(self) -> None:
+        # Hand-written migrations hoist a shared list into a constant; the
+        # wrapper still has to be followed through the name.
+        (self.migrations / "0001_initial.py").write_text(
+            HEADER
+            + "STATE_OPERATIONS = [\n"
+            + "    migrations.CreateModel(name='Entry', fields=[('action', None)]),\n"
+            + "]\n\n\n"
+            + "class Migration(migrations.Migration):\n"
+            + "    dependencies = []\n"
+            + "    operations = [\n"
+            + "        migrations.SeparateDatabaseAndState(\n"
+            + "            state_operations=STATE_OPERATIONS,\n"
+            + "        ),\n"
+            + "    ]\n",
+            encoding="utf-8",
+        )
+        state, _ = replay_app(self.migrations)
+        self.assertEqual(state, {"entry": {"action"}})
+
     def test_delete_model_drops_it(self) -> None:
         self._write(
             "0001_initial.py",
@@ -167,6 +235,31 @@ class DetectDriftTest(unittest.TestCase):
 
     def _detect(self, declared: dict) -> DriftReport:
         return detect_drift(self.root, declared=declared)
+
+    def test_model_created_inside_a_wrapper_reports_no_drift(self) -> None:
+        # A model moved between apps (or created without touching the table)
+        # lives in `state_operations`; drift must see it like Django does.
+        audit = self.root / "audit" / "migrations"
+        audit.mkdir(parents=True)
+        (audit / "0001_initial.py").write_text(
+            _migration(
+                "        migrations.SeparateDatabaseAndState(\n"
+                "            state_operations=[\n"
+                '                migrations.CreateModel(name="Entry", fields=[\n'
+                '                    ("id", None), ("action", None), ("message", None),\n'
+                "                ]),\n"
+                "            ],\n"
+                "        ),\n"
+            ),
+            encoding="utf-8",
+        )
+        report = self._detect(
+            {
+                "blog": {"post": {"id", "title"}},
+                "audit": {"entry": {"id", "action", "message"}},
+            }
+        )
+        self.assertEqual(report.drifted, [])
 
     def test_matching_schema_reports_no_drift(self) -> None:
         report = self._detect({"blog": {"post": {"id", "title"}}})

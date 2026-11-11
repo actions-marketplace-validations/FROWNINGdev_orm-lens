@@ -333,7 +333,13 @@ def _cmd_suggest_indexes(args: argparse.Namespace) -> int:
         print(f"error: model {args.model!r} not found", file=sys.stderr)
         return 2
     app_label = next((a.name for a in idx.apps if model in a.models), "")
-    result = suggest_indexes(app_label, model.name, args.path, index=idx)
+    result = suggest_indexes(
+        app_label,
+        model.name,
+        args.path,
+        index=idx,
+        include_tests=args.include_tests,
+    )
     if args.format == "json":
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
@@ -871,6 +877,15 @@ def build_parser() -> argparse.ArgumentParser:
     sidx.add_argument("model", help="Model reference, e.g. blog.Post or Post")
     sidx.add_argument(
         "--format", "-f", choices=("text", "json"), default="text"
+    )
+    sidx.add_argument(
+        "--include-tests",
+        action="store_true",
+        help=(
+            "Also scan test modules (test_*.py, *_test.py, tests.py, conftest.py "
+            "and anything under tests/ or test/). Skipped by default: a filter "
+            "that only a test runs should not drive a production index"
+        ),
     )
     sidx.set_defaults(func=_cmd_suggest_indexes)
 
