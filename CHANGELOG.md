@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Recognize directly imported Django field types** ([#250](https://github.com/FROWNINGdev/orm-lens/issues/250)).
+  The CLI and VS Code parsers now recognize `GeneratedField` and PostgreSQL
+  fields such as `ArrayField`, `HStoreField`, range fields, and
+  `SearchVectorField`. Schema drift checks can now match those declarations
+  to their migrations.
+
 - **nplusone: no `select_related` for a scalar when the loop's model is
   unknown** ([#251](https://github.com/FROWNINGdev/orm-lens/issues/251)).
   `for e in self.events.all(): e.date_from.astimezone(tz)` was guessed to be a
@@ -16,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   name that is a scalar on every model that has it is now skipped. A name that
   is a relation on at least one model, or on none, is still guessed at
   `medium`.
+
+- **signals: read the `signal=` argument to `@receiver`.** Single signals and
+  lists/tuples passed by keyword now retain their names and built-in markers
+  instead of appearing as `<unknown>` custom edges (#248).
 
 ## [py-1.18.0] - 2026-11-11
 
