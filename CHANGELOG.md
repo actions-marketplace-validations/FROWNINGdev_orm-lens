@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **suggest-indexes: only propose indexes on local columns**
+  ([#252](https://github.com/FROWNINGdev/orm-lens/issues/252)).
+  Many-to-many and reverse relation lookups still appear in usage counts,
+  but no longer produce invalid `Meta.indexes` suggestions. Django field imports
+  that use an alias keep their original field type in both parsers.
+
 - **Recognize directly imported Django field types** ([#250](https://github.com/FROWNINGdev/orm-lens/issues/250)).
   The CLI and VS Code parsers now recognize `GeneratedField` and PostgreSQL
   fields such as `ArrayField`, `HStoreField`, range fields, and
@@ -26,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **signals: read the `signal=` argument to `@receiver`.** Single signals and
   lists/tuples passed by keyword now retain their names and built-in markers
   instead of appearing as `<unknown>` custom edges (#248).
+
+- **signals: resolve aliased `receiver` imports.** Imports such as
+  `from django.dispatch import receiver as on` and `import django.dispatch as d`
+  are now resolved when matching `@receiver` decorators ([#261](https://github.com/FROWNINGdev/orm-lens/issues/261)).
 
 ## [py-1.18.0] - 2026-11-11
 

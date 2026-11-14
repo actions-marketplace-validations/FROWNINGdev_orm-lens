@@ -140,6 +140,18 @@ All of it is here, MIT-licensed, with no tier gate, no seat count, no account, a
   </a>
 </div>
 
+### 🤝 Contributors
+
+Most fixes now come from people who found orm-lens through a `good first issue`. Each one is a real wrong answer from a real Django codebase, with a repro, the file to start in and the test to make pass.
+
+<div align="center">
+  <a href="https://github.com/FROWNINGdev/orm-lens/graphs/contributors">
+    <img alt="Contributors to orm-lens" loading="lazy" src="https://contrib.rocks/image?repo=FROWNINGdev/orm-lens&max=60&columns=12" />
+  </a>
+  <br />
+  <a href="https://github.com/FROWNINGdev/orm-lens/issues?q=is%3Aopen+label%3A%22good+first+issue%22"><b>Pick up a good first issue →</b></a>
+</div>
+
 ---
 
 ## ⚡ Install

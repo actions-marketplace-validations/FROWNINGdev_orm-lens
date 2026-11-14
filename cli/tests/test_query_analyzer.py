@@ -145,6 +145,46 @@ class SuggestIndexesTest(unittest.TestCase):
             # Only the user index (from Meta) exists → no new proposals.
             self.assertEqual(result["existing_meta_indexes"], [["user"]])
 
+    def test_only_local_columns_are_proposed_for_indexes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "board" / "models.py",
+                "from django.db import models\n"
+                "class Board(models.Model):\n"
+                "    label = models.CharField(max_length=200)\n"
+                "class Story(models.Model):\n"
+                "    board = models.ForeignKey(Board, on_delete=models.CASCADE, db_index=False)\n"
+                "    title = models.CharField(max_length=200)\n"
+                "    watchers = models.ManyToManyField('auth.User')\n"
+                "class Task(models.Model):\n"
+                "    story = models.ForeignKey(Story, on_delete=models.CASCADE, related_name='work_items')\n"
+                "    done = models.BooleanField(default=False)\n",
+            )
+            _write(
+                root / "board" / "stats.py",
+                "from .models import Story\n"
+                "Story.objects.filter(watchers__isnull=False, title='one', work_items__done=False)\n"
+                "Story.objects.exclude(watchers=1, title='two', work_items__done=True)\n"
+                "Story.objects.filter(board=1)\n"
+                "Story.objects.filter(board_id=2)\n"
+                "Story.objects.order_by('-work_items__done')\n"
+                "Story.objects.order_by('-work_items__done')\n",
+            )
+
+            result = suggest_indexes("board", "Story", str(root))
+            self.assertEqual(
+                {tuple(p["fields"]) for p in result["proposed_indexes"]},
+                {("board",), ("title",)},
+            )
+            self.assertEqual(
+                {u["field"]: u["sites"] for u in result["filter_usages"] if not u.get("composite")},
+                {"board": 2, "title": 2, "watchers": 2, "work_items": 2},
+            )
+            self.assertEqual(
+                {u["field"]: u["sites"] for u in result["order_by_usages"]}, {"-work_items": 2}
+            )
+
     def test_missing_model_returns_error(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -152,6 +192,33 @@ class SuggestIndexesTest(unittest.TestCase):
             result = suggest_indexes("orders", "NoSuchModel", str(root))
             self.assertEqual(result["target"], "orders.NoSuchModel")
             self.assertEqual(result["error"], "model not found in workspace")
+
+    def test_aliased_fields_keep_their_index_eligibility(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "shop" / "models.py",
+                "from django.db import models\n"
+                "from django.db.models import CharField as CF, ManyToManyField as M2M\n"
+                "class Product(models.Model):\n"
+                "    code = CF(max_length=30)\n"
+                "    tags = M2M('Tag')\n",
+            )
+            _write(
+                root / "shop" / "views.py",
+                "from .models import Product\n"
+                "Product.objects.filter(code='one')\n"
+                "Product.objects.filter(code='two')\n"
+                "Product.objects.filter(tags=1)\n"
+                "Product.objects.filter(tags=2)\n",
+            )
+
+            result = suggest_indexes("shop", "Product", str(root))
+            self.assertEqual([p["fields"] for p in result["proposed_indexes"]], [["code"]])
+            self.assertEqual(
+                {u["field"]: u["sites"] for u in result["filter_usages"]},
+                {"code": 2, "tags": 2},
+            )
 
     def test_get_call_is_captured(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -293,10 +360,10 @@ class ForeignKeyColumnAliasTest(unittest.TestCase):
             _write(
                 root / "shop" / "tests" / "test_products.py",
                 "from shop.models import Product\n"
-                "def test_lookup_by_name():\n"
-                "    assert Product.objects.filter(name='Mug').exists()\n"
-                "def test_get_by_name():\n"
-                "    Product.objects.get(name='Mug')\n",
+                "def test_lookup_by_external_id():\n"
+                "    assert Product.objects.filter(external_id='sku-1').exists()\n"
+                "def test_get_by_external_id():\n"
+                "    Product.objects.get(external_id='sku-1')\n",
             )
 
             result_default = suggest_indexes("shop", "Product", str(root))
@@ -305,7 +372,7 @@ class ForeignKeyColumnAliasTest(unittest.TestCase):
 
             result_included = suggest_indexes("shop", "Product", str(root), include_tests=True)
             proposed = [p["fields"] for p in result_included.get("proposed_indexes", [])]
-            self.assertIn(["name"], proposed)
+            self.assertIn(["external_id"], proposed)
 
 
 if __name__ == "__main__":

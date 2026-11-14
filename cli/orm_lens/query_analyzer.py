@@ -501,10 +501,13 @@ def _propose_indexes(
     existing: list[list[str]],
     already_indexed: set[str] | None = None,
     covered_groups: list[list[str]] | None = None,
+    *,
+    indexable_fields: set[str],
 ) -> list[dict[str, Any]]:
     """Turn the frequency tables into concrete ``Meta.indexes`` suggestions.
 
     Rules:
+    * every field in a proposal must be a column on the target model's table.
     * composite filter combos with >=2 sites take priority over their
       individual-field siblings (a composite index covers single-field
       lookups on the leading column too).
@@ -530,6 +533,8 @@ def _propose_indexes(
         if combo["sites"] < 2:
             continue
         fields = combo["field"]
+        if not indexable_fields.issuperset(fields):
+            continue
         key = tuple(fields)
         if key in existing_set:
             continue
@@ -549,6 +554,8 @@ def _propose_indexes(
         if single["sites"] < 2:
             continue
         field = single["field"]
+        if field not in indexable_fields:
+            continue
         key = (field,)
         if key in existing_set:
             continue
@@ -565,12 +572,15 @@ def _propose_indexes(
         if row["sites"] < 2:
             continue
         field = row["field"]
+        bare_field = field.lstrip("-")
+        if bare_field not in indexable_fields:
+            continue
         key = (field,)
         if key in existing_set:
             continue
         # order_by keeps its ``-`` prefix; the index behind it is the same one
         # either direction, so strip it before asking whether it exists.
-        if field.lstrip("-") in covered:
+        if bare_field in covered:
             continue
         # Don't duplicate an existing filter proposal on the same bare field
         if any(p["fields"] == [field] for p in proposed):
@@ -676,6 +686,11 @@ def suggest_indexes(
 
     existing = _existing_meta_indexes(target_model.meta)
     already_indexed = _indexed_single_fields(target_model)
+    # Reverse lookups aren't declared fields; many-to-many fields use another
+    # table. Keep both in the usage counts, but never suggest indexing them.
+    indexable_fields = {pk_name} | {
+        f.name for f in target_model.all_fields() if f.relation_kind != "ManyToManyField"
+    }
     proposed = _propose_indexes(
         filter_singles,
         filter_composites,
@@ -683,6 +698,7 @@ def suggest_indexes(
         [[fk_aliases.get(f, f) for f in group] for group in existing],
         already_indexed,
         _covered_field_groups(target_model),
+        indexable_fields=indexable_fields,
     )
 
     filter_usages: list[dict[str, Any]] = list(filter_singles)

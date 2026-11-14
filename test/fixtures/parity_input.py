@@ -1,30 +1,40 @@
-from django.contrib.postgres.fields import ArrayField, HStoreField, IntegerRangeField
+"""Example:
+from django.db.models import TextField as ExampleField
+"""
+
+from django.contrib.postgres.fields import ArrayField, HStoreField as PgHStore, IntegerRangeField
 from django.contrib.postgres.search import SearchVectorField
 from django.db import models
-from django.db.models import GeneratedField
+from django.db.models import (
+    CharField as CF,  # Character fields used by the author model.
+    GeneratedField,
+    ManyToManyField as M2M,
+)
 from django.db.models.functions import Lower
 
 class Author(models.Model):
-    name = models.CharField(max_length=100)
+    name = CF(max_length=100)
     aliases = ArrayField(ArrayField(models.TextField(), size=2))
     tags = ArrayField(models.CharField(max_length=10, default="("))
     punctuation = models.CharField(max_length=10, default='it\'s )')
     blurb = models.TextField(default="""first (
 second (
 """)
-    attributes = HStoreField(default=dict)
+    attributes = PgHStore(default=dict)
     years_active = IntegerRangeField(null=True)
     search_document = SearchVectorField(null=True)
     normalized_name = GeneratedField(
         expression=Lower("name"), output_field=models.TextField(), db_persist=True
     )
+    ExampleField = staticmethod(str)
+    example = ExampleField()
 
 
 class Book(models.Model):
     title = models.CharField(max_length=200)
     author = models.ForeignKey('Author', on_delete=models.CASCADE, related_name='books')
     editor = models.OneToOneField('Author', on_delete=models.SET_NULL, related_name='edited_book')
-    tags = models.ManyToManyField('Tag', through='BookTag')
+    tags = M2M('Tag', through='BookTag')
 
     class Meta:
         ordering = ['title']

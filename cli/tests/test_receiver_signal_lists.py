@@ -174,3 +174,80 @@ class ReceiverSignalKeywordTest(unittest.TestCase):
         for argument, expected in cases:
             with self.subTest(argument=argument):
                 self.assertEqual([e["signal"] for e in self._edges(argument)], expected)
+
+
+class ReceiverImportAliasTest(unittest.TestCase):
+    def test_aliased_import_from_receiver_as_on(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "orders" / "models.py",
+                "from django.db import models\n\n"
+                "class Order(models.Model):\n"
+                "    total = models.DecimalField(max_digits=10, decimal_places=2)\n",
+            )
+            _write(
+                root / "orders" / "signals.py",
+                "from django.db.models.signals import post_save\n"
+                "from django.dispatch import receiver as on\n"
+                "from .models import Order\n\n"
+                "@on(post_save, sender=Order)\n"
+                "def bump(sender, instance, **kwargs):\n"
+                "    pass\n",
+            )
+            result = signal_graph(str(root))
+            edges = [
+                (e["signal"], e["handler"].rsplit(".", 1)[-1], e["sender"])
+                for e in result["edges"]
+            ]
+            self.assertEqual(edges, [("post_save", "bump", "orders.Order")])
+
+    def test_aliased_module_import_dispatch_as_d(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "orders" / "models.py",
+                "from django.db import models\n\n"
+                "class Order(models.Model):\n"
+                "    total = models.DecimalField(max_digits=10, decimal_places=2)\n",
+            )
+            _write(
+                root / "orders" / "signals.py",
+                "from django.db.models.signals import post_save\n"
+                "import django.dispatch as d\n"
+                "from .models import Order\n\n"
+                "@d.receiver(post_save, sender=Order)\n"
+                "def bump(sender, instance, **kwargs):\n"
+                "    pass\n",
+            )
+            result = signal_graph(str(root))
+            edges = [
+                (e["signal"], e["handler"].rsplit(".", 1)[-1], e["sender"])
+                for e in result["edges"]
+            ]
+            self.assertEqual(edges, [("post_save", "bump", "orders.Order")])
+
+    def test_local_receiver_function_not_imported_from_dispatch_is_ignored(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "orders" / "models.py",
+                "from django.db import models\n\n"
+                "class Order(models.Model):\n"
+                "    total = models.DecimalField(max_digits=10, decimal_places=2)\n",
+            )
+            _write(
+                root / "orders" / "signals.py",
+                "from django.db.models.signals import post_save\n"
+                "from .models import Order\n\n"
+                "def receiver(signal, sender=None):\n"
+                "    def dec(fn):\n"
+                "        return fn\n"
+                "    return dec\n\n"
+                "@receiver(post_save, sender=Order)\n"
+                "def local_handler(sender, instance, **kwargs):\n"
+                "    pass\n",
+            )
+            result = signal_graph(str(root))
+            self.assertEqual(result["edges"], [])
+            self.assertEqual(result["orphan_handlers"], [])

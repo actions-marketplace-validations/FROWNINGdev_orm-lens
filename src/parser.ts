@@ -162,6 +162,50 @@ const BARE_FIELD_TYPES = [
   'TreeForeignKey', 'TreeOneToOneField', 'TreeManyToManyField',
 ].join('|');
 
+const BARE_FIELD_NAMES = new Set(BARE_FIELD_TYPES.split('|'));
+const FIELD_IMPORT_RE =
+  /^from\s+(?:django\.db\.models(?:\.[\w.]+)?|django\.contrib\.postgres\.(?:fields(?:\.[\w.]+)?|search))\s+import\s+/;
+const IMPORT_ALIAS_RE = /^([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)$/;
+
+function fieldImportAliases(lines: string[]): Map<string, string> {
+  const aliases = new Map<string, string>();
+  if (!lines.some((line) => FIELD_IMPORT_RE.test(line))) return aliases;
+
+  // Scan quotes and comments so a sample import in a docstring is not a binding.
+  let quote = '';
+  const quoteOrComment = /\\.|'''|"""|['"#]/g;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const match = quote ? null : line.match(FIELD_IMPORT_RE);
+    if (match) {
+      let names = line.slice(match[0].length).split('#')[0].trim();
+      if (names.startsWith('(')) {
+        let j = i;
+        while (!names.includes(')') && j + 1 < lines.length) {
+          names += ' ' + lines[++j].split('#')[0];
+        }
+        names = names.slice(1).split(')')[0];
+      }
+      for (const name of names.split(',')) {
+        const alias = name.trim().match(IMPORT_ALIAS_RE);
+        if (alias && BARE_FIELD_NAMES.has(alias[1])) aliases.set(alias[2], alias[1]);
+      }
+    }
+    for (const token of line.matchAll(quoteOrComment)) {
+      const value = token[0];
+      if (quote) {
+        if (value === quote || (quote.length === 1 && value.startsWith(quote))) quote = '';
+      } else if (value === '#') {
+        break;
+      } else if (!value.startsWith('\\')) {
+        quote = value;
+      }
+    }
+    if (quote.length === 1 && !line.endsWith('\\')) quote = '';
+  }
+  return aliases;
+}
+
 function buildBodyRegexes(indent: number) {
   const w = `\\s{${indent}}`;
   const w2 = `\\s{${indent * 2}}`;
@@ -182,6 +226,9 @@ function buildBodyRegexes(indent: number) {
     ),
     BARE_FIELD_RE: new RegExp(
       `^${w}([a-zA-Z_][a-zA-Z0-9_]*)${ann}\\s*=\\s*${prefixOpt}(${BARE_FIELD_TYPES})\\s*\\(`
+    ),
+    ALIASED_FIELD_RE: new RegExp(
+      `^${w}([a-zA-Z_][a-zA-Z0-9_]*)${ann}\\s*=\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\(`
     ),
     META_START_RE: new RegExp(`^${w}class\\s+Meta\\s*(?:\\([^)]*\\))?\\s*:`),
     META_ITEM_RE: new RegExp(
@@ -326,6 +373,7 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
   const lines = content
     .split(/\r?\n/)
     .map((l) => l.replace(/\t/g, '    '));
+  const fieldAliases = fieldImportAliases(lines);
   const models: ParsedModel[] = [];
   const parent = path.basename(path.dirname(filePath));
   const appName =
@@ -365,7 +413,7 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
     };
 
     const indent = detectClassIndent(lines, classHeaderEnd);
-    const { FIELD_RE, BARE_FIELD_RE, META_START_RE, META_ITEM_RE, META_BODY_RE } =
+    const { FIELD_RE, BARE_FIELD_RE, ALIASED_FIELD_RE, META_START_RE, META_ITEM_RE, META_BODY_RE } =
       buildBodyRegexes(indent);
 
     let j = classHeaderEnd + 1;
@@ -395,10 +443,14 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
         continue;
       }
 
-      const fieldMatch = innerLine.match(FIELD_RE) ?? innerLine.match(BARE_FIELD_RE);
+      const aliasMatch = fieldAliases.size ? innerLine.match(ALIASED_FIELD_RE) : null;
+      const aliasedType = aliasMatch && fieldAliases.get(aliasMatch[2]);
+      const fieldMatch = aliasedType
+        ? aliasMatch
+        : innerLine.match(FIELD_RE) ?? innerLine.match(BARE_FIELD_RE);
       if (fieldMatch) {
         const fieldName = fieldMatch[1];
-        const fieldType = fieldMatch[2];
+        const fieldType = aliasedType || fieldMatch[2];
         const { argsBlock, endIdx } = readBalancedArgs(lines, j);
         if (NOT_A_FIELD_TYPES.has(fieldType)) {
           j = endIdx + 1;

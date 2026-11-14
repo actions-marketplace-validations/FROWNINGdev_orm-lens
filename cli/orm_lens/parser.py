@@ -101,6 +101,12 @@ BARE_FIELD_TYPES = "|".join(
         "TreeForeignKey", "TreeOneToOneField", "TreeManyToManyField",
     ]
 )
+_BARE_FIELD_NAMES = frozenset(BARE_FIELD_TYPES.split("|"))
+_FIELD_IMPORT_RE = re.compile(
+    r"^from\s+(?:django\.db\.models(?:\.[\w.]+)?|django\.contrib\.postgres\.(?:fields(?:\.[\w.]+)?|search))"
+    r"\s+import\s+"
+)
+_IMPORT_ALIAS_RE = re.compile(r"([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)")
 
 
 def _read_multiline_class(lines: Sequence[str], start: int):
@@ -179,6 +185,9 @@ def _build_body_regexes(indent: int):
         ),
         "BARE_FIELD_RE": re.compile(
             rf"^{w}([a-zA-Z_][a-zA-Z0-9_]*){ann}\s*=\s*{prefix_opt}({BARE_FIELD_TYPES})\s*\("
+        ),
+        "ALIASED_FIELD_RE": re.compile(
+            rf"^{w}([a-zA-Z_][a-zA-Z0-9_]*){ann}\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\("
         ),
         "META_START_RE": re.compile(rf"^{w}class\s+Meta\s*(?:\([^)]*\))?\s*:"),
         "META_ITEM_RE": re.compile(
@@ -553,6 +562,26 @@ def _lines_inside_strings(lines: Sequence[str]) -> frozenset[int]:
     return frozenset(inside)
 
 
+def _field_import_aliases(lines: Sequence[str], in_string: frozenset[int]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for i, line in enumerate(lines):
+        match = _FIELD_IMPORT_RE.match(line)
+        if not match or i in in_string:
+            continue
+        names = line[match.end():].partition("#")[0].strip()
+        if names.startswith("("):
+            j = i
+            while ")" not in names and j + 1 < len(lines):
+                j += 1
+                names += " " + lines[j].partition("#")[0]
+            names = names[1:].partition(")")[0]
+        for name in names.split(","):
+            alias = _IMPORT_ALIAS_RE.fullmatch(name.strip())
+            if alias and alias[1] in _BARE_FIELD_NAMES:
+                aliases[alias[2]] = alias[1]
+    return aliases
+
+
 def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
     """Pass 1 only: collect every class def (name, bases, fields, Meta).
 
@@ -572,9 +601,12 @@ def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
     # detected. Line numbers are preserved (per-line expansion only).
     lines = [line.expandtabs(4) for line in content.splitlines()]
     all_defs: list[ParsedModel] = []
-    # Built on first use: only column-0 classes followed by a column-0
-    # statement-looking line need it.
+    # Scan strings only if needed for imports or class boundaries.
     in_string: frozenset[int] | None = None
+    field_aliases: dict[str, str] = {}
+    if any(_FIELD_IMPORT_RE.match(line) for line in lines):
+        in_string = _lines_inside_strings(lines)
+        field_aliases = _field_import_aliases(lines, in_string)
     parent = os.path.basename(os.path.dirname(file_path))
     if parent == "models":
         app_name = os.path.basename(os.path.dirname(os.path.dirname(file_path)))
@@ -676,9 +708,15 @@ def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
                 j = k
                 continue
 
-            fm = rx["FIELD_RE"].match(inner) or rx["BARE_FIELD_RE"].match(inner)
+            alias_match = rx["ALIASED_FIELD_RE"].match(inner) if field_aliases else None
+            aliased_type = field_aliases.get(alias_match[2]) if alias_match else None
+            fm = (
+                alias_match
+                if aliased_type
+                else rx["FIELD_RE"].match(inner) or rx["BARE_FIELD_RE"].match(inner)
+            )
             if fm:
-                fname, ftype = fm.group(1), fm.group(2)
+                fname, ftype = fm[1], aliased_type or fm[2]
                 args_block, end_idx = _read_balanced_args(lines, j)
                 if ftype in _NOT_A_FIELD:
                     j = end_idx + 1

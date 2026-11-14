@@ -77,18 +77,58 @@ def _name_of(node: ast.AST) -> str | None:
     return None
 
 
-def _extract_receiver_call(dec: ast.AST) -> ast.Call | None:
+def _collect_receiver_aliases(tree: ast.AST) -> set[str]:
+    """Collect dotted names and bare identifiers in a module that resolve
+    to ``django.dispatch.receiver``.
+    """
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("django.dispatch", "django.dispatch.dispatcher"):
+                    bound = alias.asname or alias.name
+                    aliases.add(f"{bound}.receiver")
+                    if not alias.asname:
+                        aliases.add("dispatch.receiver")
+                elif alias.name == "django":
+                    bound = alias.asname or alias.name
+                    aliases.add(f"{bound}.dispatch.receiver")
+        elif isinstance(node, ast.ImportFrom):
+            if not node.module:
+                continue
+            if node.module in ("django.dispatch", "django.dispatch.dispatcher"):
+                for alias in node.names:
+                    if alias.name == "receiver":
+                        aliases.add(alias.asname or alias.name)
+                    elif alias.name == "*":
+                        aliases.add("receiver")
+            elif node.module == "django":
+                for alias in node.names:
+                    if alias.name == "dispatch":
+                        bound = alias.asname or alias.name
+                        aliases.add(f"{bound}.receiver")
+                    elif alias.name == "*":
+                        aliases.add("dispatch.receiver")
+    return aliases
+
+
+def _extract_receiver_call(
+    dec: ast.AST, receiver_aliases: set[str] | frozenset[str] | None = None
+) -> ast.Call | None:
     """Return the ``receiver(...)`` Call node if ``dec`` is one, else None.
 
-    Accepts both ``@receiver(...)`` and ``@dispatch.receiver(...)`` forms.
+    Matches decorators whose dotted name resolves to ``django.dispatch.receiver``.
+    When ``receiver_aliases`` is omitted, falls back to the canonical forms
+    ``{"receiver", "dispatch.receiver", "django.dispatch.receiver"}``.
     """
     if not isinstance(dec, ast.Call):
         return None
     func_name = _name_of(dec.func)
     if not func_name:
         return None
-    tail = func_name.rsplit(".", 1)[-1]
-    if tail != "receiver":
+    if receiver_aliases is None:
+        receiver_aliases = {"receiver", "dispatch.receiver", "django.dispatch.receiver"}
+    if func_name not in receiver_aliases:
         return None
     return dec
 
@@ -305,11 +345,12 @@ def signal_graph(
 
     # Pass 2 — decorators, .connect() and .send() calls.
     for py, tree, module_path in parsed:
+        receiver_aliases = _collect_receiver_aliases(tree)
         # Walk all functions (module-level + nested) for @receiver decorators.
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 for dec in node.decorator_list:
-                    rcall = _extract_receiver_call(dec)
+                    rcall = _extract_receiver_call(dec, receiver_aliases)
                     if rcall is None:
                         continue
                     handler_fqn = (
