@@ -167,30 +167,13 @@ const FIELD_IMPORT_RE =
   /^from\s+(?:django\.db\.models(?:\.[\w.]+)?|django\.contrib\.postgres\.(?:fields(?:\.[\w.]+)?|search))\s+import\s+/;
 const IMPORT_ALIAS_RE = /^([A-Za-z_]\w*)\s+as\s+([A-Za-z_]\w*)$/;
 
-function fieldImportAliases(lines: string[]): Map<string, string> {
-  const aliases = new Map<string, string>();
-  if (!lines.some((line) => FIELD_IMPORT_RE.test(line))) return aliases;
-
-  // Scan quotes and comments so a sample import in a docstring is not a binding.
+function linesInsideStrings(lines: string[]): Set<number> {
+  const inside = new Set<number>();
   let quote = '';
   const quoteOrComment = /\\.|'''|"""|['"#]/g;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const match = quote ? null : line.match(FIELD_IMPORT_RE);
-    if (match) {
-      let names = line.slice(match[0].length).split('#')[0].trim();
-      if (names.startsWith('(')) {
-        let j = i;
-        while (!names.includes(')') && j + 1 < lines.length) {
-          names += ' ' + lines[++j].split('#')[0];
-        }
-        names = names.slice(1).split(')')[0];
-      }
-      for (const name of names.split(',')) {
-        const alias = name.trim().match(IMPORT_ALIAS_RE);
-        if (alias && BARE_FIELD_NAMES.has(alias[1])) aliases.set(alias[2], alias[1]);
-      }
-    }
+    if (quote) inside.add(i);
     for (const token of line.matchAll(quoteOrComment)) {
       const value = token[0];
       if (quote) {
@@ -202,6 +185,29 @@ function fieldImportAliases(lines: string[]): Map<string, string> {
       }
     }
     if (quote.length === 1 && !line.endsWith('\\')) quote = '';
+  }
+  return inside;
+}
+
+function fieldImportAliases(lines: string[], insideStrings: Set<number>): Map<string, string> {
+  const aliases = new Map<string, string>();
+  for (let i = 0; i < lines.length; i++) {
+    if (insideStrings.has(i)) continue;
+    const line = lines[i];
+    const match = line.match(FIELD_IMPORT_RE);
+    if (!match) continue;
+    let names = line.slice(match[0].length).split('#')[0].trim();
+    if (names.startsWith('(')) {
+      let j = i;
+      while (!names.includes(')') && j + 1 < lines.length) {
+        names += ' ' + lines[++j].split('#')[0];
+      }
+      names = names.slice(1).split(')')[0];
+    }
+    for (const name of names.split(',')) {
+      const alias = name.trim().match(IMPORT_ALIAS_RE);
+      if (alias && BARE_FIELD_NAMES.has(alias[1])) aliases.set(alias[2], alias[1]);
+    }
   }
   return aliases;
 }
@@ -373,7 +379,8 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
   const lines = content
     .split(/\r?\n/)
     .map((l) => l.replace(/\t/g, '    '));
-  const fieldAliases = fieldImportAliases(lines);
+  const insideStrings = linesInsideStrings(lines);
+  const fieldAliases = fieldImportAliases(lines, insideStrings);
   const models: ParsedModel[] = [];
   const parent = path.basename(path.dirname(filePath));
   const appName =
@@ -381,6 +388,10 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
 
   let i = 0;
   while (i < lines.length) {
+    if (insideStrings.has(i)) {
+      i++;
+      continue;
+    }
     const line = lines[i];
     let classMatch = line.match(CLASS_RE);
     let classHeaderEnd = i;
@@ -418,6 +429,10 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
 
     let j = classHeaderEnd + 1;
     while (j < lines.length) {
+      if (insideStrings.has(j)) {
+        j++;
+        continue;
+      }
       const innerLine = lines[j];
       if (/^class\s+/.test(innerLine) && !/^\s+class/.test(innerLine)) {
         break;
@@ -431,6 +446,10 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
       if (metaStart) {
         let k = j + 1;
         while (k < lines.length) {
+          if (insideStrings.has(k)) {
+            k++;
+            continue;
+          }
           const metaLine = lines[k];
           if (metaLine.length && !META_BODY_RE.test(metaLine) && metaLine.trim().length > 0) break;
           const m = metaLine.match(META_ITEM_RE);

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Parser: ignore Django field examples inside model docstrings.** Both the
+  CLI and VS Code now keep those examples out of the model's field list.
+
 - **suggest-indexes: only propose indexes on local columns**
   ([#252](https://github.com/FROWNINGdev/orm-lens/issues/252)).
   Many-to-many and reverse relation lookups still appear in usage counts,

@@ -601,12 +601,8 @@ def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
     # detected. Line numbers are preserved (per-line expansion only).
     lines = [line.expandtabs(4) for line in content.splitlines()]
     all_defs: list[ParsedModel] = []
-    # Scan strings only if needed for imports or class boundaries.
-    in_string: frozenset[int] | None = None
-    field_aliases: dict[str, str] = {}
-    if any(_FIELD_IMPORT_RE.match(line) for line in lines):
-        in_string = _lines_inside_strings(lines)
-        field_aliases = _field_import_aliases(lines, in_string)
+    in_string = _lines_inside_strings(lines)
+    field_aliases = _field_import_aliases(lines, in_string)
     parent = os.path.basename(os.path.dirname(file_path))
     if parent == "models":
         app_name = os.path.basename(os.path.dirname(os.path.dirname(file_path)))
@@ -615,6 +611,9 @@ def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
 
     i = 0
     while i < len(lines):
+        if i in in_string:
+            i += 1
+            continue
         line = lines[i]
         # A class indented inside a module-level ``if`` is still a model (see
         # _encloses_only_blocks). Match the dedented view so the ``^class``
@@ -666,6 +665,9 @@ def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
 
         j = class_header_end + 1
         while j < len(lines):
+            if j in in_string:
+                j += 1
+                continue
             inner = lines[j]
             # An indented class ends where the source dedents back out of it.
             # Column-0 classes keep the original terminator exactly, so files
@@ -683,13 +685,9 @@ def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
             # a plain class (``class OutOfStock(Exception)``) ran over every
             # following ``if not is_model_registered(...)`` block and hid the
             # models inside them (#226). Column-0 comments and blank lines
-            # still stay inside the body, and so do column-0 lines of a
-            # multi-line string, even when they start with ``if`` or ``for``.
+            # still stay inside the body. Lines inside strings were skipped above.
             if not class_indent and _COLUMN0_STATEMENT_RE.match(inner):
-                if in_string is None:
-                    in_string = _lines_inside_strings(lines)
-                if j not in in_string:
-                    break
+                break
             if not inner.strip():
                 j += 1
                 continue
@@ -697,6 +695,9 @@ def _collect_defs(file_path: str, content: str) -> list[ParsedModel]:
             if rx["META_START_RE"].match(inner):
                 k = j + 1
                 while k < len(lines):
+                    if k in in_string:
+                        k += 1
+                        continue
                     ml = lines[k]
                     if ml and not rx["META_BODY_RE"].match(ml) and ml.strip():
                         break

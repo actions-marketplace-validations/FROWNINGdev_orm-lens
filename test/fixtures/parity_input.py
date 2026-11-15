@@ -13,6 +13,12 @@ from django.db.models import (
 from django.db.models.functions import Lower
 
 class Author(models.Model):
+    """Example fields for the documentation, not part of the model.
+
+    sample_alias = CF(max_length=100)
+    sample_field = models.CharField(max_length=100)
+    """
+
     name = CF(max_length=100)
     aliases = ArrayField(ArrayField(models.TextField(), size=2))
     tags = ArrayField(models.CharField(max_length=10, default="("))
