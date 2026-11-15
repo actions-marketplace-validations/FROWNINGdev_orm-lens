@@ -337,6 +337,33 @@ def _indexed_single_fields(model: Any) -> set[str]:
     return out
 
 
+def _unique_single_fields(model: Any) -> set[str]:
+    """Columns whose equality lookup already returns at most one row.
+
+    The primary key, ``primary_key=True`` / ``unique=True`` fields and
+    ``OneToOneField`` columns. A composite index led by one of these earns
+    nothing: the equality on that column alone has already narrowed the scan
+    to a single row, so the remaining columns never see a second row (#269).
+    ``db_index=True`` and plain ``ForeignKey`` columns are *not* here — they
+    are indexed but not unique, so a composite over them can still pay.
+
+    ``<field>_id`` spellings are folded onto the relation name, like the
+    lookups (#225), so a combo written either way is recognised.
+    """
+    out: set[str] = {primary_key_field(model), "pk"}
+    aliases = _fk_column_aliases(model)
+    for f in model.all_fields():
+        args = f.args or ""
+        if (
+            _PK_TRUE_RE.search(args)
+            or _UNIQUE_TRUE_RE.search(args)
+            or f.relation_kind == "OneToOneField"
+        ):
+            out.add(f.name)
+            out.add(aliases.get(f.name, f.name))
+    return out
+
+
 def _covered_field_groups(model: Any) -> list[list[str]]:
     """Every multi-column index the model already declares, in Meta.
 
@@ -501,6 +528,7 @@ def _propose_indexes(
     existing: list[list[str]],
     already_indexed: set[str] | None = None,
     covered_groups: list[list[str]] | None = None,
+    unique_fields: set[str] | None = None,
     *,
     indexable_fields: set[str],
 ) -> list[dict[str, Any]]:
@@ -512,6 +540,9 @@ def _propose_indexes(
       individual-field siblings (a composite index covers single-field
       lookups on the leading column too).
     * single-field filter usage needs >=2 sites to warrant its own index.
+    * a composite combo containing a unique single column — the primary key,
+      a ``unique=True`` field, a ``OneToOneField`` — is dropped: the equality
+      on that column already returns at most one row (#269).
     * every order_by field with >=2 sites gets a proposal (unless already
       covered by an existing index whose leading field matches).
 
@@ -522,6 +553,7 @@ def _propose_indexes(
     people the tool has not read their model.
     """
     covered = already_indexed or set()
+    unique = unique_fields or set()
     existing_set = {tuple(x) for x in existing}
     # Every column group already backed by an index, whichever Meta option
     # declared it — indexes, unique_together or a UniqueConstraint.
@@ -541,6 +573,10 @@ def _propose_indexes(
         # An existing index over the same columns answers this combo whatever
         # order it was declared in.
         if any(set(fields) == grp for grp in existing_sets):
+            continue
+        # The equality on a unique column already narrows the scan to one row,
+        # so the columns after it are never reached.
+        if unique.intersection(fields):
             continue
         proposed.append(
             {
@@ -698,6 +734,7 @@ def suggest_indexes(
         [[fk_aliases.get(f, f) for f in group] for group in existing],
         already_indexed,
         _covered_field_groups(target_model),
+        _unique_single_fields(target_model),
         indexable_fields=indexable_fields,
     )
 

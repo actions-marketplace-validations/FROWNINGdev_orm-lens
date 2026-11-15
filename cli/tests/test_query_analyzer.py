@@ -185,6 +185,105 @@ class SuggestIndexesTest(unittest.TestCase):
                 {u["field"]: u["sites"] for u in result["order_by_usages"]}, {"-work_items": 2}
             )
 
+    def test_composite_with_a_unique_column_is_not_proposed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "board" / "models.py",
+                "from django.db import models\n"
+                "class Story(models.Model):\n"
+                "    title = models.CharField(max_length=200)\n"
+                "    slug = models.SlugField(unique=True)\n"
+                "    status = models.CharField(max_length=20)\n",
+            )
+            _write(
+                root / "board" / "stats.py",
+                "from .models import Story\n"
+                "def a(pk, title):\n"
+                "    return Story.objects.filter(id=pk, title=title).first()\n"
+                "def b(pk, title):\n"
+                "    return Story.objects.get(id=pk, title=title)\n"
+                "def c(pk, status):\n"
+                "    return Story.objects.filter(pk=pk, status=status).exists()\n"
+                "def d(pk, status):\n"
+                "    return Story.objects.filter(pk=pk, status=status).first()\n"
+                "def e(slug, status):\n"
+                "    return Story.objects.filter(slug=slug, status=status).exists()\n"
+                "def f(slug, status):\n"
+                "    return Story.objects.filter(slug=slug, status=status).first()\n",
+            )
+
+            result = suggest_indexes("board", "Story", str(root))
+
+            self.assertEqual(
+                {tuple(p["fields"]) for p in result["proposed_indexes"]},
+                {("status",), ("title",)},
+            )
+            composites = [u["field"] for u in result["filter_usages"] if u.get("composite")]
+            self.assertIn(["id", "title"], composites)
+
+    def test_custom_primary_key_composite_is_not_proposed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "board" / "models.py",
+                "from django.db import models\n"
+                "class Story(models.Model):\n"
+                "    code = models.CharField(max_length=20, primary_key=True)\n"
+                "    title = models.CharField(max_length=200)\n"
+                "    status = models.CharField(max_length=20)\n",
+            )
+            _write(
+                root / "board" / "stats.py",
+                "from .models import Story\n"
+                "def a(code, title):\n"
+                "    return Story.objects.filter(code=code, title=title).first()\n"
+                "def b(code, title):\n"
+                "    return Story.objects.get(code=code, title=title)\n"
+                "def c(code, status):\n"
+                "    return Story.objects.filter(code=code, status=status).exists()\n"
+                "def d(code, status):\n"
+                "    return Story.objects.filter(code=code, status=status).first()\n"
+                "def e(title, status):\n"
+                "    return Story.objects.filter(title=title, status=status).exists()\n"
+                "def f(title, status):\n"
+                "    return Story.objects.filter(title=title, status=status).first()\n",
+            )
+
+            result = suggest_indexes("board", "Story", str(root))
+
+            self.assertEqual(
+                {tuple(p["fields"]) for p in result["proposed_indexes"]},
+                {("title",), ("status", "title")},
+            )
+
+    def test_db_index_field_still_earns_a_composite(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "board" / "models.py",
+                "from django.db import models\n"
+                "class Story(models.Model):\n"
+                "    rank = models.IntegerField(db_index=True)\n"
+                "    status = models.CharField(max_length=20)\n",
+            )
+            _write(
+                root / "board" / "stats.py",
+                "from .models import Story\n"
+                "def a(rank, status):\n"
+                "    return Story.objects.filter(rank=rank, status=status).first()\n"
+                "def b(rank, status):\n"
+                "    return Story.objects.filter(rank=rank, status=status).exists()\n",
+            )
+
+            result = suggest_indexes("board", "Story", str(root))
+
+            # Indexed but not unique: the pair can still pay off.
+            self.assertEqual(
+                {tuple(p["fields"]) for p in result["proposed_indexes"]},
+                {("rank", "status"), ("status",)},
+            )
+
     def test_missing_model_returns_error(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Parser: ignore Django field examples inside model docstrings.** Both the
   CLI and VS Code now keep those examples out of the model's field list.
+- **suggest-indexes: skip composites over a unique column**
+  ([#269](https://github.com/FROWNINGdev/orm-lens/issues/269)).
+  A combo containing the primary key, a `unique=True` field or a
+  `OneToOneField` is no longer proposed: equality on that column already
+  returns at most one row, so the rest of the index never pays for its
+  writes. `db_index=True` fields stay eligible.
 
 - **suggest-indexes: only propose indexes on local columns**
   ([#252](https://github.com/FROWNINGdev/orm-lens/issues/252)).
