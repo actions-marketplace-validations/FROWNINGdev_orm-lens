@@ -137,6 +137,9 @@ class ParsedModel:
     inheritance. ``None`` when the source does not determine it."""
     relationships: list[ParsedRelationship] = field(default_factory=list)
     """SQLAlchemy only: ``relationship()`` attributes, own and inherited."""
+    removed_fields: list[str] = field(default_factory=list)
+    """Names the class body sets to ``None``, which removes a field inherited
+    from an abstract base (``username = None`` on an ``AbstractUser``)."""
 
     def all_fields(self) -> list[ParsedField]:
         """Every field on this model's own table, parent-first.

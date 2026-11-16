@@ -96,6 +96,50 @@ class SubcommandsSmokeTest(unittest.TestCase):
             f"expected 'file:line [severity/confidence]' line in output, got: {out!r}",
         )
 
+    def test_migration_risk_text_graph_finding_has_no_none(self) -> None:
+        # Graph-level findings (conflicting leaves) have model=None; the text
+        # header must read "shop", not "shop.None".
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "shop" / "migrations").mkdir(parents=True)
+            (root / "shop" / "__init__.py").write_text("")
+            (root / "shop" / "migrations" / "__init__.py").write_text("")
+            (root / "shop" / "models.py").write_text(
+                "from django.db import models\n\n\n"
+                "class Item(models.Model):\n"
+                "    name = models.CharField(max_length=100)\n"
+                "    price = models.IntegerField(default=0)\n"
+                "    sku = models.CharField(max_length=20, default='')\n"
+            )
+            mig = root / "shop" / "migrations"
+            (mig / "0001_initial.py").write_text(
+                "from django.db import migrations, models\n\n\n"
+                "class Migration(migrations.Migration):\n"
+                "    initial = True\n"
+                "    dependencies = []\n"
+                "    operations = [migrations.CreateModel(name='Item', fields=["
+                "('id', models.AutoField(primary_key=True)), "
+                "('name', models.CharField(max_length=100))])]\n"
+            )
+            for name, fld in (
+                ("0002_item_price", "name='price', field=models.IntegerField(default=0)"),
+                ("0002_item_sku", "name='sku', field=models.CharField(max_length=20, default='')"),
+            ):
+                (mig / f"{name}.py").write_text(
+                    "from django.db import migrations, models\n\n\n"
+                    "class Migration(migrations.Migration):\n"
+                    "    dependencies = [('shop', '0001_initial')]\n"
+                    f"    operations = [migrations.AddField(model_name='item', {fld})]\n"
+                )
+            _code, out, _err = _run(
+                ["migration-risk", "--path", str(root), "--exit-zero"]
+            )
+        self.assertIn("conflicting_migration_leaves", out)
+        self.assertIn("(migration graph) shop\n", out)
+        self.assertNotIn("None", out)
+
     def test_migration_risk_json_format(self) -> None:
         # JSON path uses to_dict() — separate from the text path bug,
         # but worth pinning too.

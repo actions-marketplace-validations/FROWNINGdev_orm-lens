@@ -362,11 +362,11 @@ orm-lens migration-deps blog -f mermaid   # per-app migration DAG
 orm-lens cascade blog.Author          # what one delete() takes down
 ```
 
-每个命令都接受 `--path <dir>` 与 `--exclude <glob>`。`nplusone` / `migration-risk` / `diff` 在有发现时以退出码 `1` 结束 —— 把它们放进 CI，即可在出现回归时拦下 PR。
+除 `stats-sql` 与 `mcp` 外，每个命令都接受 `--path <dir>` 与 `--exclude <glob>`；`orm-lens <cmd> --help` 会列出该命令的参数。`nplusone` / `migration-risk` / `diff` 在有发现时以退出码 `1` 结束 —— 把它们放进 CI，即可在出现回归时拦下 PR。
 
 ### MCP 服务器
 
-在你的 agent 中注册一次，即可暴露十个只读工具：
+在你的 agent 中注册一次，即可暴露十四个只读工具：
 
 | 工具 | 用途 |
 | --- | --- |
@@ -375,10 +375,14 @@ orm-lens cascade blog.Author          # what one delete() takes down
 | `describe_model` | 单个模型的完整字段 / 关系 / Meta 详情 |
 | `find_relations` | 单个模型的入向 + 出向关系 |
 | `cascade_preview` | 一次 `delete()` 的波及范围，按 `on_delete` 分组 |
-| `er_diagram` | ER 图 —— `mermaid` / `dbml` / `d2` / `plantuml` |
+| `er_diagram` | ER 图 —— `mermaid` / `dbml` / `d2` / `plantuml` / `dot` |
 | `describe_migration_dependency` | 按 app 的迁移 DAG：根、叶、跨 app 依赖 |
 | `suggest_indexes` | 依据观察到的 QuerySet 用法给出 `Meta.indexes` 建议 |
 | `signal_graph` | 来自 `@receiver` 装饰器的 Sender→signal→handler 图 |
+| `migration_risk` | Django 迁移与 Alembic 修订中的危险结构变更（锁表、删除列） |
+| `blast_radius` | 一次破坏性迁移会波及什么：它的风险、仍在读取它的代码、级联后果 |
+| `drift` | 无需启动 Django 的 `makemigrations --check` —— 将迁移与 `models.py` 对比 |
+| `impact` | 某个字段或模型名的所有引用，按 Django 层分组 |
 | `nplusone_scan` | 整个工作区的静态 N+1 检测结果 |
 
 ```bash

@@ -312,7 +312,8 @@ def _cmd_migration_risk(args: argparse.Namespace) -> int:
         for f in findings:
             print(
                 f"{f.file_path}:{f.line_number}  [{f.severity}/{f.confidence}]  "
-                f"{f.operation} {f.app}.{f.model}"
+                f"{f.operation} {f.app}"
+                + (f".{f.model}" if f.model else "")
                 + (f".{f.field}" if f.field else "")
             )
             print(f"  rule:      {f.rule}")

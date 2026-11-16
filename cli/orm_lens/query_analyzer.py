@@ -949,6 +949,23 @@ def _collect_call_chain_methods(node: ast.AST) -> list[tuple[str, ast.Call]]:
     return out
 
 
+def _prefetch_queryset_paths(prefetch: ast.Call, lookup: str) -> set[str]:
+    """Eager paths that ``Prefetch(lookup, queryset=...)`` loads below ``lookup``.
+
+    ``Prefetch("items", queryset=OrderItem.objects.select_related("product"))``
+    also loads ``items__product``: a loop over ``order.items.all()`` reading
+    ``item.product`` is served from the cache. Only an inline queryset chain is
+    read; a queryset held in a variable is not followed.
+    """
+    queryset = next((kw.value for kw in prefetch.keywords if kw.arg == "queryset"), None)
+    if queryset is None and len(prefetch.args) > 1:
+        queryset = prefetch.args[1]
+    if not isinstance(queryset, ast.Call):
+        return set()
+    select, nested = _chain_prefetch_args(_collect_call_chain_methods(queryset), full_paths=True)
+    return {f"{lookup}__{path}" for path in select | nested if path != "*"}
+
+
 def _chain_prefetch_args(
     chain: list[tuple[str, ast.Call]],
     *,
@@ -980,16 +997,19 @@ def _chain_prefetch_args(
                     for inner in arg.args:
                         if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
                             lookup = inner.value
-                            if full_paths and any(
+                            has_alias = any(
                                 keyword.arg == "to_attr" and not (
                                     isinstance(keyword.value, ast.Constant) and not keyword.value.value
                                 )
                                 for keyword in arg.keywords
-                            ):
+                            )
+                            if full_paths and has_alias:
                                 # Only the final lookup is stored on the alias.
                                 lookup = lookup.rpartition("__")[0]
                             if lookup:
                                 prefetch_set.add(lookup if full_paths else lookup.split("__", 1)[0])
+                            if full_paths and lookup and not has_alias:
+                                prefetch_set |= _prefetch_queryset_paths(arg, lookup)
                             break
     return select_set, prefetch_set
 

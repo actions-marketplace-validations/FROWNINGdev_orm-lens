@@ -236,6 +236,10 @@ function buildBodyRegexes(indent: number) {
     ALIASED_FIELD_RE: new RegExp(
       `^${w}([a-zA-Z_][a-zA-Z0-9_]*)${ann}\\s*=\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\(`
     ),
+    // `a = None` or chained `a = b = None`; group 1 holds the targets.
+    REMOVED_RE: new RegExp(
+      `^${w}([a-zA-Z_][a-zA-Z0-9_]*(?:\\s*=\\s*[a-zA-Z_][a-zA-Z0-9_]*)*)${ann}\\s*=\\s*None\\s*(?:#.*)?$`
+    ),
     META_START_RE: new RegExp(`^${w}class\\s+Meta\\s*(?:\\([^)]*\\))?\\s*:`),
     META_ITEM_RE: new RegExp(
       `^${w2}([a-zA-Z_][a-zA-Z0-9_]*)${ann}\\s*=\\s*(.+?)\\s*(#.*)?$`
@@ -424,8 +428,15 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
     };
 
     const indent = detectClassIndent(lines, classHeaderEnd);
-    const { FIELD_RE, BARE_FIELD_RE, ALIASED_FIELD_RE, META_START_RE, META_ITEM_RE, META_BODY_RE } =
-      buildBodyRegexes(indent);
+    const {
+      FIELD_RE,
+      BARE_FIELD_RE,
+      ALIASED_FIELD_RE,
+      REMOVED_RE,
+      META_START_RE,
+      META_ITEM_RE,
+      META_BODY_RE,
+    } = buildBodyRegexes(indent);
 
     let j = classHeaderEnd + 1;
     while (j < lines.length) {
@@ -435,6 +446,11 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
       }
       const innerLine = lines[j];
       if (/^class\s+/.test(innerLine) && !/^\s+class/.test(innerLine)) {
+        break;
+      }
+      // A column-0 function, block or decorator ends the class too, as in the
+      // Python parser (#226), so its body is not read as class attributes.
+      if (COLUMN0_STATEMENT_RE.test(innerLine)) {
         break;
       }
       if (innerLine.trim().length === 0) {
@@ -459,6 +475,14 @@ export function collectDefs(filePath: string, content: string): ParsedModel[] {
           k++;
         }
         j = k;
+        continue;
+      }
+
+      const removed = innerLine.match(REMOVED_RE);
+      if (removed) {
+        // `name = None` drops a field inherited from an abstract base.
+        (model.removedFields ??= []).push(...removed[1].split(/\s*=\s*/));
+        j++;
         continue;
       }
 
@@ -533,6 +557,67 @@ function isAbstract(model: ParsedModel): boolean {
   return ['True', '1', 'true'].includes((model.meta.abstract ?? '').trim());
 }
 
+/** Mirrors `_COLUMN0_STATEMENT_RE` in cli/orm_lens/parser.py. */
+const COLUMN0_STATEMENT_RE =
+  /^(?:(?:if|elif|while|for|try|with|async\s+(?:def|for|with)|def)\b|(?:else|except|finally)\b|@)/;
+
+const djangoField = (name: string, type: string, args: string, inheritedFrom: string): ParsedField => ({
+  name,
+  type,
+  args,
+  isRelation: false,
+  lineNumber: 0,
+  inheritedFrom,
+});
+
+const authM2m = (name: string, target: string): ParsedField => ({
+  name,
+  type: 'ManyToManyField',
+  args: `"${target}", blank=True, related_name="user_set", related_query_name="user"`,
+  isRelation: true,
+  relatedModel: target,
+  relationKind: 'ManyToManyField',
+  relatedName: 'user_set',
+  lineNumber: 0,
+  inheritedFrom: 'PermissionsMixin',
+});
+
+const ABSTRACT_BASE_USER = [
+  djangoField('password', 'CharField', 'max_length=128', 'AbstractBaseUser'),
+  djangoField('last_login', 'DateTimeField', 'blank=True, null=True', 'AbstractBaseUser'),
+];
+const PERMISSIONS_MIXIN = [
+  djangoField('is_superuser', 'BooleanField', 'default=False', 'PermissionsMixin'),
+  authM2m('groups', 'auth.Group'),
+  authM2m('user_permissions', 'auth.Permission'),
+];
+
+/**
+ * Fields of `django.contrib.auth`'s abstract bases, which live in
+ * site-packages where a workspace scan never looks. `is_active` on
+ * `AbstractBaseUser` is a plain class attribute, not a field. A workspace class
+ * of the same name wins. Mirrors `DJANGO_ABSTRACT_BASES` in
+ * cli/orm_lens/parser.py.
+ */
+const DJANGO_ABSTRACT_BASES = new Map<string, readonly ParsedField[]>([
+  ['AbstractBaseUser', ABSTRACT_BASE_USER],
+  ['PermissionsMixin', PERMISSIONS_MIXIN],
+  [
+    'AbstractUser',
+    [
+      ...ABSTRACT_BASE_USER,
+      ...PERMISSIONS_MIXIN,
+      djangoField('username', 'CharField', 'max_length=150, unique=True', 'AbstractUser'),
+      djangoField('first_name', 'CharField', 'max_length=150, blank=True', 'AbstractUser'),
+      djangoField('last_name', 'CharField', 'max_length=150, blank=True', 'AbstractUser'),
+      djangoField('email', 'EmailField', 'blank=True', 'AbstractUser'),
+      djangoField('is_staff', 'BooleanField', 'default=False', 'AbstractUser'),
+      djangoField('is_active', 'BooleanField', 'default=True', 'AbstractUser'),
+      djangoField('date_joined', 'DateTimeField', 'default=timezone.now', 'AbstractUser'),
+    ],
+  ],
+]);
+
 /**
  * Fields `model` inherits from its **abstract** bases, parent-first.
  *
@@ -543,8 +628,9 @@ function isAbstract(model: ParsedModel): boolean {
  *
  * Bases are walked in declaration order and the first declaration of a name
  * wins, which is the direction Python's MRO resolves for the single-
- * inheritance chains this actually matters for. `stack` breaks cycles in
- * malformed source instead of recursing forever.
+ * inheritance chains this actually matters for. A parent's own field, or its
+ * `name = None`, hides that name from the parent's ancestors. `stack` breaks
+ * cycles in malformed source instead of recursing forever.
  *
  * Mirrors `_abstract_bases_fields` in cli/orm_lens/parser.py.
  */
@@ -559,14 +645,21 @@ function abstractBasesFields(
     const tail = base.split('.').pop() ?? '';
     if (stack.includes(tail)) continue;
     const parent = byName.get(tail);
-    if (!parent || parent === model || !isAbstract(parent)) continue;
-    const contributed: ParsedField[] = [
-      ...abstractBasesFields(parent, byName, [...stack, tail]),
-      ...parent.fields.map((f) => ({
-        ...f,
-        inheritedFrom: f.inheritedFrom ?? parent.name,
-      })),
-    ];
+    let contributed: ParsedField[];
+    if (!parent) {
+      contributed = (DJANGO_ABSTRACT_BASES.get(tail) ?? []).map((f) => ({ ...f }));
+    } else if (parent === model || !isAbstract(parent)) {
+      continue;
+    } else {
+      const hidden = new Set([...parent.fields.map((f) => f.name), ...(parent.removedFields ?? [])]);
+      contributed = [
+        ...abstractBasesFields(parent, byName, [...stack, tail]).filter((f) => !hidden.has(f.name)),
+        ...parent.fields.map((f) => ({
+          ...f,
+          inheritedFrom: f.inheritedFrom ?? parent.name,
+        })),
+      ];
+    }
     for (const f of contributed) {
       if (taken.has(f.name)) continue;
       taken.add(f.name);
@@ -592,7 +685,7 @@ function attachInheritedFields(allDefs: ParsedModel[]): void {
     if (!byName.has(m.name)) byName.set(m.name, m);
   }
   for (const m of allDefs) {
-    const own = new Set(m.fields.map((f) => f.name));
+    const own = new Set([...m.fields.map((f) => f.name), ...(m.removedFields ?? [])]);
     m.inheritedFields = abstractBasesFields(m, byName).filter((f) => !own.has(f.name));
   }
 }

@@ -184,6 +184,26 @@ def _migration_dependencies(cls: ast.ClassDef | None) -> list[list[str]]:
     return pairs
 
 
+def _dependencies_unknown(cls: ast.ClassDef | None) -> bool:
+    """True when ``dependencies`` is assigned something other than a literal list.
+
+    Some migrations compute it, e.g. ``dependencies = get_dependencies()`` to
+    depend on an optional app only when it is installed. The static reader
+    sees ``[]`` there, which is indistinguishable from "no dependencies" and
+    makes the real parent look like a second leaf.
+    """
+    if cls is None:
+        return False
+    unknown = False
+    for stmt in cls.body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+        if "dependencies" in targets:
+            unknown = not isinstance(stmt.value, (ast.List, ast.Tuple))
+    return unknown
+
+
 def _parse_migration_file(path: Path) -> dict[str, Any] | None:
     """Parse one migration file. Returns dict or ``None`` on unreadable/invalid.
 
@@ -239,6 +259,8 @@ def _describe_migration(path: Path, tree: ast.Module) -> dict[str, Any] | None:
     }
     if replaces:
         out["replaces"] = replaces
+    if _dependencies_unknown(cls):
+        out["dependencies_unknown"] = True
     return out
 
 
@@ -1496,14 +1518,20 @@ def analyze_migration_risks(
             # the dependencies that point at files in this directory, and stays
             # silent when they are ambiguous: a false "your migrations
             # conflict" is worse than a missed one.
+            #
+            # Same reasoning when a migration computes its `dependencies`
+            # (`dependencies = get_dependencies()`): we read them as `[]`, so
+            # its parent looks like a leaf. We cannot tell the graph's shape,
+            # so stay silent for the app.
             effective_label = _resolve_app_label(
                 {m["name"]: m["dependencies"] for m in parsed}, app_label
             )
+            deps_unknown = any(m.get("dependencies_unknown") for m in parsed)
             leaves = (
                 _compute_roots_leaves_cross(
                     _collapse_squashed(parsed, effective_label), effective_label
                 )[1]
-                if effective_label
+                if effective_label and not deps_unknown
                 else []
             )
             if len(leaves) > 1:

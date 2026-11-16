@@ -362,11 +362,11 @@ orm-lens migration-deps blog -f mermaid   # per-app migration DAG
 orm-lens cascade blog.Author          # what one delete() takes down
 ```
 
-Cada comando acepta `--path <dir>` y `--exclude <glob>`. `nplusone` / `migration-risk` / `diff` devuelven código de salida `1` cuando hay hallazgos — mételos en la CI para bloquear PRs ante regresiones.
+Todos los comandos salvo `stats-sql` y `mcp` aceptan `--path <dir>` y `--exclude <glob>`; `orm-lens <cmd> --help` muestra las opciones de cada comando. `nplusone` / `migration-risk` / `diff` devuelven código de salida `1` cuando hay hallazgos — mételos en la CI para bloquear PRs ante regresiones.
 
 ### Servidor MCP
 
-Regístralo una vez con tu agente y expone diez herramientas de solo lectura:
+Regístralo una vez con tu agente y expone catorce herramientas de solo lectura:
 
 | Herramienta | Propósito |
 | --- | --- |
@@ -375,10 +375,14 @@ Regístralo una vez con tu agente y expone diez herramientas de solo lectura:
 | `describe_model` | Detalle completo de campos / relaciones / Meta de un modelo |
 | `find_relations` | Relaciones entrantes + salientes de un modelo |
 | `cascade_preview` | Radio de impacto de un `delete()`, agrupado por `on_delete` |
-| `er_diagram` | Diagrama ER — `mermaid` / `dbml` / `d2` / `plantuml` |
+| `er_diagram` | Diagrama ER — `mermaid` / `dbml` / `d2` / `plantuml` / `dot` |
 | `describe_migration_dependency` | DAG de migraciones por aplicación: raíces, hojas, dependencias entre aplicaciones |
 | `suggest_indexes` | Propuestas de `Meta.indexes` a partir del uso observado de QuerySets |
 | `signal_graph` | Grafo emisor→señal→manejador a partir de decoradores `@receiver` |
+| `migration_risk` | Cambios de esquema peligrosos en migraciones de Django y revisiones de Alembic (bloqueos de tabla, columnas eliminadas) |
+| `blast_radius` | A qué afecta una migración destructiva: sus riesgos, el código que aún la lee y las consecuencias en cascada |
+| `drift` | `makemigrations --check` sin arrancar Django — las migraciones comparadas con `models.py` |
+| `impact` | Cada referencia a un campo o nombre de modelo, agrupada por capa de Django |
 | `nplusone_scan` | Hallazgos estáticos de N+1 para todo el espacio de trabajo |
 
 ```bash

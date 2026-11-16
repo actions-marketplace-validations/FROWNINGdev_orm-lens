@@ -149,6 +149,54 @@ class MigrationConflictTests(unittest.TestCase):
         )
         self.assertEqual(_conflicts(root), [])
 
+    def test_dependencies_built_by_a_function_are_not_a_conflict(self) -> None:
+        """`dependencies = get_dependencies()` cannot be read statically.
+
+        Reading it as `[]` left its parent without a child, so a linear history
+        got a critical conflict between the parent and the real leaf.
+        """
+        root = _project(
+            [
+                ("0001_initial.py", "[]"),
+                ("0003_noop.py", "[('shop', '0002_backfill')]"),
+            ]
+        )
+        (Path(root) / "shop" / "migrations" / "0002_backfill.py").write_text(
+            textwrap.dedent(
+                """
+                from django.conf import settings
+                from django.db import migrations
+
+
+                def get_dependencies():
+                    dependencies = [("shop", "0001_initial")]
+                    if "billing" in settings.INSTALLED_APPS:
+                        dependencies.append(("billing", "0001_initial"))
+                    return dependencies
+
+
+                class Migration(migrations.Migration):
+                    dependencies = get_dependencies()
+                    operations = []
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(_conflicts(root), [])
+
+    def test_literal_dependencies_still_conflict_next_to_a_tuple(self) -> None:
+        """A tuple literal is still read, so a real conflict is still caught."""
+        root = _project(
+            [
+                ("0001_initial.py", "()"),
+                ("0002_alice.py", "(('shop', '0001_initial'),)"),
+                ("0002_bob.py", "[('shop', '0001_initial')]"),
+            ]
+        )
+        self.assertEqual(
+            {r.migration for r in _conflicts(root)}, {"0002_alice", "0002_bob"}
+        )
 
     def test_app_label_differing_from_directory_name_is_not_a_conflict(self) -> None:
         """Django lets `AppConfig.label` differ from the package directory, and

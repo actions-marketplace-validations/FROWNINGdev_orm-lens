@@ -144,6 +144,50 @@ class NestedRelationTest(unittest.TestCase):
                 )
                 self.assertEqual(scan_for_nplusone(str(root), SHOP_SCHEMA), [])
 
+    def _scan_prefetch_queryset(self, prefetch: str) -> list[NPlusOneFinding]:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "views.py",
+                "from django.db.models import Prefetch\n"
+                "def index():\n"
+                "    for order in Order.objects.prefetch_related(\n"
+                f"        {prefetch}\n"
+                "    ):\n"
+                "        for item in order.items.all():\n"
+                "            print(item.product.category.name)\n",
+            )
+            return scan_for_nplusone(str(root), SHOP_SCHEMA)
+
+    def test_prefetch_queryset_select_related_covers_inner_loop(self) -> None:
+        # Found on code a coding agent wrote: the inner queryset already joins the product.
+        for prefetch in (
+            "Prefetch('items', queryset=OrderItem.objects.select_related('product__category'))",
+            "Prefetch('items', OrderItem.objects.select_related('product__category').order_by('pk'))",
+            "Prefetch('items', queryset=OrderItem.objects.prefetch_related('product__category'))",
+            "Prefetch('items', queryset=OrderItem.objects.select_related('product')"
+            ".prefetch_related('product__category'))",
+        ):
+            with self.subTest(prefetch=prefetch):
+                self.assertEqual(self._scan_prefetch_queryset(prefetch), [])
+
+    def test_prefetch_queryset_partial_paths_still_flag_the_rest(self) -> None:
+        findings = self._scan_prefetch_queryset(
+            "Prefetch('items', queryset=OrderItem.objects.select_related('product'))",
+        )
+        self.assertEqual([f.accessed for f in findings], [["category"]])
+
+    def test_prefetch_queryset_is_not_followed_through_an_alias_or_variable(self) -> None:
+        for prefetch in (
+            "Prefetch('items', queryset=OrderItem.objects.select_related('product__category'),"
+            " to_attr='loaded_items')",
+            "Prefetch('items', queryset=item_qs)",
+        ):
+            with self.subTest(prefetch=prefetch):
+                self.assertEqual(
+                    [f.accessed for f in self._scan_prefetch_queryset(prefetch)], [["product__category"]],
+                )
+
     def test_nearer_unpacking_loop_stops_inheritance(self) -> None:
         for target in ("order", "order, label", "[order, label]",
                        "label, (order, other)", "*order, label", "label, [*order]"):

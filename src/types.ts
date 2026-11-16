@@ -40,6 +40,12 @@ export interface ParsedModel {
    * invent columns no migration will ever create.
    */
   inheritedFields: ParsedField[];
+  /**
+   * Names the class body sets to `None`, which removes a field inherited from
+   * an abstract base (`username = None` on an `AbstractUser`). Mirrors
+   * `ParsedModel.removed_fields` in the Python CLI.
+   */
+  removedFields?: string[];
   meta: Record<string, string>;
   baseClasses: string[];
 }
