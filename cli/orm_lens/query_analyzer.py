@@ -543,8 +543,9 @@ def _propose_indexes(
     * a composite combo containing a unique single column — the primary key,
       a ``unique=True`` field, a ``OneToOneField`` — is dropped: the equality
       on that column already returns at most one row (#269).
-    * every order_by field with >=2 sites gets a proposal (unless already
-      covered by an existing index whose leading field matches).
+    * every order_by field with >=2 sites gets a proposal (unless an
+      existing or already-proposed index covers the same column; direction
+      does not distinguish them, since a B-tree serves both).
 
     Existing ``Meta.indexes`` are dedup'd by exact field-list match, and
     ``already_indexed`` drops anything Django indexes on its own — primary
@@ -560,6 +561,10 @@ def _propose_indexes(
     existing_sets = [set(x) for x in (covered_groups or existing)]
     proposed: list[dict[str, Any]] = []
     covered_leaders: set[str] = set()
+    # Bare column names already proposed as a single-column index. ``-field``
+    # and ``field`` are the same index to a B-tree, so the sign must not make
+    # the order_by pass propose a second one.
+    proposed_singles: set[str] = set()
 
     for combo in filter_composites:
         if combo["sites"] < 2:
@@ -603,6 +608,7 @@ def _propose_indexes(
                 "reason": f"{single['sites']} filter sites",
             }
         )
+        proposed_singles.add(field)
 
     for row in order_by_summary:
         if row["sites"] < 2:
@@ -618,8 +624,9 @@ def _propose_indexes(
         # either direction, so strip it before asking whether it exists.
         if bare_field in covered:
             continue
-        # Don't duplicate an existing filter proposal on the same bare field
-        if any(p["fields"] == [field] for p in proposed):
+        # Don't duplicate a filter proposal, or the opposite sort direction,
+        # on the same column.
+        if bare_field in proposed_singles:
             continue
         proposed.append(
             {
@@ -627,6 +634,7 @@ def _propose_indexes(
                 "reason": f"{row['sites']} order_by sites",
             }
         )
+        proposed_singles.add(bare_field)
 
     return proposed
 

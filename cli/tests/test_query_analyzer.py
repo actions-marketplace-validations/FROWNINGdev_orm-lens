@@ -473,6 +473,63 @@ class ForeignKeyColumnAliasTest(unittest.TestCase):
             proposed = [p["fields"] for p in result_included.get("proposed_indexes", [])]
             self.assertIn(["external_id"], proposed)
 
+    def test_opposite_order_by_directions_share_one_index(self) -> None:
+        """A B-tree index on a column answers the sort in either direction.
+        The analyzer proposed both ``[field]`` and ``[-field]``, leaving two
+        indexes to create and pay write costs for."""
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _copy_miniapp(root)
+            _write(
+                root / "views" / "feeds.py",
+                "from orders.models import Order\n"
+                "def a():\n"
+                "    return Order.objects.order_by('created_at')\n"
+                "def b():\n"
+                "    return Order.objects.order_by('created_at')\n"
+                "def c():\n"
+                "    return Order.objects.order_by('-created_at')\n"
+                "def d():\n"
+                "    return Order.objects.order_by('-created_at')\n",
+            )
+
+            result = suggest_indexes("orders", "Order", str(root))
+
+            order_proposals = [
+                p for p in result["proposed_indexes"] if "order_by" in p["reason"]
+            ]
+            self.assertEqual(len(order_proposals), 1)
+
+    def test_order_by_does_not_duplicate_a_filter_index_in_the_other_direction(
+        self,
+    ) -> None:
+        """A filter proposal already covers the column for ordering too; the
+        order_by pass used to add ``[-field]`` beside ``[field]``."""
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _copy_miniapp(root)
+            _write(
+                root / "views" / "feeds.py",
+                "from orders.models import Order\n"
+                "def a():\n"
+                "    return Order.objects.filter(created_at__isnull=True)\n"
+                "def b():\n"
+                "    return Order.objects.filter(created_at__isnull=False)\n"
+                "def c():\n"
+                "    return Order.objects.order_by('-created_at')\n"
+                "def d():\n"
+                "    return Order.objects.order_by('-created_at')\n",
+            )
+
+            result = suggest_indexes("orders", "Order", str(root))
+
+            created_at = [
+                p["fields"]
+                for p in result["proposed_indexes"]
+                if p["fields"] in (["created_at"], ["-created_at"])
+            ]
+            self.assertEqual(created_at, [["created_at"]])
+
 
 if __name__ == "__main__":
     unittest.main()

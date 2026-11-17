@@ -176,32 +176,88 @@ def _migration_dependencies(cls: ast.ClassDef | None) -> list[list[str]]:
         return []
     pairs: list[list[str]] = []
     for stmt in cls.body:
-        if not isinstance(stmt, ast.Assign):
-            continue
-        targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
-        if "dependencies" in targets:
+        if isinstance(stmt, ast.Assign):
+            targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+            if "dependencies" in targets:
+                pairs = _extract_dependency_pairs(stmt.value)
+        elif (
+            isinstance(stmt, ast.AnnAssign)
+            and isinstance(stmt.target, ast.Name)
+            and stmt.target.id == "dependencies"
+            and stmt.value is not None
+        ):
             pairs = _extract_dependency_pairs(stmt.value)
     return pairs
 
 
-def _dependencies_unknown(cls: ast.ClassDef | None) -> bool:
-    """True when ``dependencies`` is assigned something other than a literal list.
+def _is_swappable_dependency(node: ast.AST) -> bool:
+    """True when a dependency element is swappable_dependency(...) or migrations.swappable_dependency(...).
 
-    Some migrations compute it, e.g. ``dependencies = get_dependencies()`` to
-    depend on an optional app only when it is installed. The static reader
-    sees ``[]`` there, which is indistinguishable from "no dependencies" and
-    makes the real parent look like a second leaf.
+    Django uses swappable dependencies to reference swappable models like
+    AUTH_USER_MODEL across apps. Because it targets an external model rather
+    than a same-app migration, it does not affect same-app leaf detection,
+    but it is a recognized static construct and should not mark the migration's
+    dependencies as unknown.
+    """
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return (isinstance(func, ast.Attribute) and func.attr == "swappable_dependency") or (
+        isinstance(func, ast.Name) and func.id == "swappable_dependency"
+    )
+
+
+def _dependencies_unknown(cls: ast.ClassDef | None) -> bool:
+    """True when ``dependencies`` is assigned something other than a literal list of pairs.
+
+    Some migrations compute it (e.g. ``dependencies = get_dependencies()`` or
+    ``dependencies = [("shop", get_parent())]``) to depend on an optional app
+    or dynamic branch. The static reader sees ``[]`` or drops the computed
+    pairs, which is indistinguishable from "no dependencies" and makes the real
+    parent look like a second leaf.
+
+    ``swappable_dependency(...)`` / ``migrations.swappable_dependency(...)`` is
+    treated as a known dependency element rather than an unknown computed one;
+    it references an external model across apps and does not form same-app leaf
+    edges.
     """
     if cls is None:
         return False
-    unknown = False
+    last_value: ast.AST | None = None
+    has_assignment = False
     for stmt in cls.body:
-        if not isinstance(stmt, ast.Assign):
+        if isinstance(stmt, ast.Assign):
+            targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+            if "dependencies" in targets:
+                last_value = stmt.value
+                has_assignment = True
+        elif (
+            isinstance(stmt, ast.AnnAssign)
+            and isinstance(stmt.target, ast.Name)
+            and stmt.target.id == "dependencies"
+            and stmt.value is not None
+        ):
+            last_value = stmt.value
+            has_assignment = True
+
+    if not has_assignment or last_value is None:
+        return False
+
+    if not isinstance(last_value, (ast.List, ast.Tuple)):
+        return True
+
+    for elt in last_value.elts:
+        if _is_swappable_dependency(elt):
             continue
-        targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
-        if "dependencies" in targets:
-            unknown = not isinstance(stmt.value, (ast.List, ast.Tuple))
-    return unknown
+        val = _literal_or_none(elt)
+        if not (
+            isinstance(val, (tuple, list))
+            and len(val) == 2
+            and all(isinstance(v, str) for v in val)
+        ):
+            return True
+
+    return False
 
 
 def _parse_migration_file(path: Path) -> dict[str, Any] | None:

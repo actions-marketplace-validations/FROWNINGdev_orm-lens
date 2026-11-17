@@ -1,9 +1,10 @@
 """Schema diff — compare two ``orm-lens`` JSON dumps.
 
-Pure stdlib. Takes two dicts in the shape produced by
-``WorkspaceIndex.to_dict()`` (i.e. what ``scan --format=json`` or
-``list --format=json`` write) and reports what changed at the model,
-field, and relation level.
+Pure stdlib. Takes two schema dumps in the shape produced by
+``scan --format=json`` (``WorkspaceIndex.to_dict()``) or by
+``list --format=json`` (a flat ``[{app, model}]`` array), and reports what
+changed at the model, field, and relation level. The list format carries no
+fields, so comparing two of those reports model additions and removals only.
 
 Intended as a code-review aid: run ``list --format=json`` on the main
 branch, again on the PR branch, then ``diff before.json after.json`` to
@@ -137,16 +138,33 @@ class DiffResult:
         }
 
 
-def _index_models(schema: dict) -> dict[str, dict]:
-    """Flatten ``{apps: [{name, models: [...]}, ...]}`` to ``{app.Model: model_dict}``.
+def _index_models(schema: Any) -> dict[str, dict]:
+    """Flatten a schema dump to ``{app.Model: model_dict}``.
 
-    ``schema`` accepts either the full workspace dump or a bare
-    ``{"apps": [...]}`` payload. Unknown shapes yield an empty index rather
-    than raising — the diff is deliberately forgiving so ``diff`` on an
-    unrelated JSON file surfaces as "everything removed" instead of a
-    traceback.
+    ``schema`` accepts the full workspace dump, a bare ``{"apps": [...]}``
+    payload, or the flat ``[{"app": ..., "model": ...}]`` list that
+    ``list --format json`` writes. A list entry carries no fields, so a diff
+    of two list dumps reports model additions and removals only — the only
+    structural information that format contains. Unknown shapes yield an
+    empty index rather than raising — the diff is deliberately forgiving so
+    ``diff`` on an unrelated JSON file surfaces as "everything removed"
+    instead of a traceback.
     """
-    out: dict[str, dict] = {}
+    if isinstance(schema, list):
+        out: dict[str, dict] = {}
+        for entry in schema:
+            if not isinstance(entry, dict):
+                continue
+            app_name = entry.get("app") or ""
+            model_name = entry.get("model") or ""
+            if not isinstance(app_name, str) or not isinstance(model_name, str):
+                continue
+            if not model_name:
+                continue
+            key = f"{app_name}.{model_name}" if app_name else model_name
+            out[key] = {"name": model_name, "appName": app_name, "fields": []}
+        return out
+    out = {}
     apps = schema.get("apps") if isinstance(schema, dict) else None
     if not isinstance(apps, list):
         return out
@@ -189,14 +207,19 @@ def _delta(old: dict, new: dict, keys: tuple[str, ...]) -> dict[str, dict[str, A
     return out
 
 
-def diff_schemas(old: dict, new: dict) -> DiffResult:
-    """Compute the delta between two ``WorkspaceIndex.to_dict()`` payloads.
+def diff_schemas(old: Any, new: Any) -> DiffResult:
+    """Compute the delta between two schema dumps.
 
-    Both inputs are treated as read-only. Models are matched by
-    ``app.Model`` key; fields and relations are matched by name inside
-    the containing model. Fields present in one side and absent from the
-    other are reported as added/removed — this tool does not attempt to
-    detect renames (that requires heuristics the caller may not want).
+    Inputs are the shapes :func:`_index_models` accepts: a full
+    ``WorkspaceIndex.to_dict()`` payload (``scan --format json``) or the flat
+    ``[{app, model}]`` list ``list --format json`` writes. Both are treated as
+    read-only. When either input is a flat list dump, only model additions and
+    removals are reported: that format has no field data, and comparing it
+    with a full dump would mark every field as removed. For two full dumps,
+    models are matched by ``app.Model`` key; fields and relations are matched
+    by name inside the containing model. Fields present in one side and absent
+    from the other are reported as added/removed — this tool does not attempt
+    to detect renames (that requires heuristics the caller may not want).
     """
     result = DiffResult()
 
@@ -209,6 +232,12 @@ def diff_schemas(old: dict, new: dict) -> DiffResult:
 
     result.added_models = added_keys
     result.removed_models = removed_keys
+
+    # A flat list dump carries no fields. Comparing it with a full dump would
+    # read every field on the full side as removed, so stop at the model-level
+    # answer both shapes can give. Model additions/removals stay valid.
+    if isinstance(old, list) or isinstance(new, list):
+        return result
 
     for key in common_keys:
         old_scalars, old_relations = _split_fields(old_models[key])

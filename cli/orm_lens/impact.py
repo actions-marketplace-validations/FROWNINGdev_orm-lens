@@ -206,23 +206,22 @@ def scan_file_text(
         layer = detect_layer(file_path)
     escaped = re.escape(needle)
     detect = re.compile(rf"\b{escaped}\b|\b{escaped}__")
-    start_at = re.compile(rf"\b{escaped}")
     out: list[ImpactFinding] = []
     for i, line in enumerate(text.splitlines()):
-        if not detect.search(line):
+        match = detect.search(line)
+        if match is None:
             continue
         cls = classify_line(layer, line, needle)
         if cls is None:
             continue
         confidence, reason = cls
-        m = start_at.search(line)
         out.append(
             ImpactFinding(
                 layer=layer,
                 confidence=confidence,
                 file_path=file_path,
                 line=i,
-                column=m.start() if m else 0,
+                column=match.start(),
                 snippet=line.strip()[:200],
                 reason=reason,
             )

@@ -15,8 +15,8 @@ const DOCS_BASE =
   'https://github.com/FROWNINGdev/orm-lens/blob/main/docs/rules';
 
 /** `models.CharField(...)` or `models.TextField(...)` — string-based fields. */
-const RE_STRING_FIELD_LINE =
-  /\b(?:models\.)?(CharField|TextField)\s*\(([^()]*)\)/g;
+const RE_STRING_FIELD_OPEN =
+  /\b(?:models\.)?(CharField|TextField)\s*\(/g;
 /**
  * ForeignKey / OneToOneField call opener: the relations that require on_delete.
  * The argument list is read by `readCallArgs`, so nested calls such as
@@ -167,16 +167,20 @@ const DOL011: Rule = {
     for (let i = 0; i < ctx.lineCount; i++) {
       const text = ctx.lineAt(i);
       if (isCommentLine(text)) continue;
-      RE_STRING_FIELD_LINE.lastIndex = 0;
+      RE_STRING_FIELD_OPEN.lastIndex = 0;
       let m: RegExpExecArray | null;
-      while ((m = RE_STRING_FIELD_LINE.exec(text)) !== null) {
-        const argBody = m[2];
-        if (!hasKwarg(argBody, 'null')) continue;
+      while ((m = RE_STRING_FIELD_OPEN.exec(text)) !== null) {
+        // `readCallArgs`, not `([^()]*)`: an i18n wrapper such as
+        // `verbose_name=_("Name")` contains its own parens, and the flat
+        // regex never matched the field at all (#182 for DOL013).
+        const call = readCallArgs(text, m.index + m[0].length);
+        if (call === null) continue;
+        if (!hasKwarg(call.argBody, 'null')) continue;
         out.push({
           code: 'DOL011',
           messageId: 'default',
           args: { field: m[1] },
-          range: { line: i, startCol: m.index, endCol: m.index + m[0].length },
+          range: { line: i, startCol: m.index, endCol: call.end },
           applicability: 'suggestion',
         });
       }
@@ -312,19 +316,20 @@ const DOL014: Rule = {
   },
   check(ctx: RuleContext): Finding[] {
     const out: Finding[] = [];
-    const RE = /\b(?:models\.)?CharField\s*\(([^()]*)\)/g;
+    const RE = /\b(?:models\.)?CharField\s*\(/g;
     for (let i = 0; i < ctx.lineCount; i++) {
       const text = ctx.lineAt(i);
       if (isCommentLine(text)) continue;
       RE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = RE.exec(text)) !== null) {
-        const argBody = m[1];
-        if (hasKwargName(argBody, 'max_length')) continue;
+        const call = readCallArgs(text, m.index + m[0].length);
+        if (call === null) continue;
+        if (hasKwargName(call.argBody, 'max_length')) continue;
         out.push({
           code: 'DOL014',
           messageId: 'default',
-          range: { line: i, startCol: m.index, endCol: m.index + m[0].length },
+          range: { line: i, startCol: m.index, endCol: call.end },
           applicability: 'suggestion',
         });
       }
@@ -354,19 +359,20 @@ const DOL015: Rule = {
   },
   check(ctx: RuleContext): Finding[] {
     const out: Finding[] = [];
-    const RE = /\b(?:models\.)?TextField\s*\(([^()]*)\)/g;
+    const RE = /\b(?:models\.)?TextField\s*\(/g;
     for (let i = 0; i < ctx.lineCount; i++) {
       const text = ctx.lineAt(i);
       if (isCommentLine(text)) continue;
       RE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = RE.exec(text)) !== null) {
-        const argBody = m[1];
-        if (!hasKwargName(argBody, 'max_length')) continue;
+        const call = readCallArgs(text, m.index + m[0].length);
+        if (call === null) continue;
+        if (!hasKwargName(call.argBody, 'max_length')) continue;
         out.push({
           code: 'DOL015',
           messageId: 'default',
-          range: { line: i, startCol: m.index, endCol: m.index + m[0].length },
+          range: { line: i, startCol: m.index, endCol: call.end },
           applicability: 'suggestion',
         });
       }

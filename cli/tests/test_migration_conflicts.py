@@ -185,6 +185,72 @@ class MigrationConflictTests(unittest.TestCase):
         )
         self.assertEqual(_conflicts(root), [])
 
+    def test_annotated_computed_dependencies_are_not_a_conflict(self) -> None:
+        """`dependencies: list = get_dependencies()` after `dependencies = []`.
+
+        The annotated assignment rebinds dependencies with a computed value;
+        ignoring AnnAssign allowed the initial `[]` to win and misidentified
+        0001_initial as a conflicting leaf.
+        """
+        root = _project(
+            [
+                ("0001_initial.py", "[]"),
+                ("0003_noop.py", "[('shop', '0002_backfill')]"),
+            ]
+        )
+        (Path(root) / "shop" / "migrations" / "0002_backfill.py").write_text(
+            textwrap.dedent(
+                """
+                from django.db import migrations
+
+
+                def get_dependencies():
+                    return [("shop", "0001_initial")]
+
+
+                class Migration(migrations.Migration):
+                    dependencies = []
+                    dependencies: list = get_dependencies()
+                    operations = []
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(_conflicts(root), [])
+
+    def test_computed_pair_inside_dependencies_list_is_not_a_conflict(self) -> None:
+        """A computed element inside `dependencies = [("shop", get_parent())]`.
+
+        Dropping the computed pair made 0002 look like it had no dependencies,
+        making 0001_initial a second leaf alongside 0003_noop.
+        """
+        root = _project(
+            [
+                ("0001_initial.py", "[]"),
+                ("0003_noop.py", "[('shop', '0002_backfill')]"),
+            ]
+        )
+        (Path(root) / "shop" / "migrations" / "0002_backfill.py").write_text(
+            textwrap.dedent(
+                """
+                from django.db import migrations
+
+
+                def get_parent():
+                    return "0001_initial"
+
+
+                class Migration(migrations.Migration):
+                    dependencies = [("shop", get_parent())]
+                    operations = []
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(_conflicts(root), [])
+
     def test_literal_dependencies_still_conflict_next_to_a_tuple(self) -> None:
         """A tuple literal is still read, so a real conflict is still caught."""
         root = _project(
@@ -228,6 +294,43 @@ class MigrationConflictTests(unittest.TestCase):
                 encoding="utf-8",
             )
         self.assertEqual(_conflicts(tmp.name), [])
+
+    def test_swappable_dependency_still_reports_conflict_on_branches(self) -> None:
+        """`migrations.swappable_dependency(...)` is a known cross-app dependency.
+
+        It must not mark dependencies unknown (which would silence real leaf
+        conflicts), and because it is not a same-app edge it leaves the in-app
+        leaf graph intact.
+        """
+        root = _project(
+            [
+                ("0001_initial.py", "[]"),
+                (
+                    "0002_alice.py",
+                    "[('shop', '0001_initial'), migrations.swappable_dependency(settings.AUTH_USER_MODEL)]",
+                ),
+                (
+                    "0002_bob.py",
+                    "[swappable_dependency(settings.AUTH_USER_MODEL), ('shop', '0001_initial')]",
+                ),
+            ]
+        )
+        self.assertEqual(
+            {r.migration for r in _conflicts(root)}, {"0002_alice", "0002_bob"}
+        )
+
+    def test_swappable_dependency_in_linear_history_is_not_a_conflict(self) -> None:
+        """A linear migration path containing a swappable dependency has a single leaf."""
+        root = _project(
+            [
+                ("0001_initial.py", "[]"),
+                (
+                    "0002_user_profile.py",
+                    "[('shop', '0001_initial'), migrations.swappable_dependency(settings.AUTH_USER_MODEL)]",
+                ),
+            ]
+        )
+        self.assertEqual(_conflicts(root), [])
 
 
 if __name__ == "__main__":

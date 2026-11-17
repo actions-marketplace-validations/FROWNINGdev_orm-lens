@@ -62,6 +62,16 @@ test('DOL011 leaves CharField without null=True alone', () => {
   assert.equal(findings.length, 0);
 });
 
+test('DOL011 reads past nested calls before null=True', () => {
+  const rule = ruleByCode('DOL011');
+  for (const src of [
+    'name = models.CharField(max_length=100, verbose_name=_("Name"), null=True)',
+    'bio = models.TextField(verbose_name=gettext("Bio"), null=True)',
+  ]) {
+    assert.equal(rule.check(makeCtx(src)).length, 1, src);
+  }
+});
+
 test('DOL012 flags a Model class with no __str__', () => {
   const rule = ruleByCode('DOL012');
   const src = [
@@ -210,6 +220,14 @@ test('DOL014 flags CharField without max_length', () => {
   assert.equal(findings.length, 1);
 });
 
+test('DOL014 reads past nested calls before max_length', () => {
+  const rule = ruleByCode('DOL014');
+  const findings = rule.check(
+    makeCtx('nickname = models.CharField(verbose_name=_("Nickname"))'),
+  );
+  assert.equal(findings.length, 1);
+});
+
 test('DOL014 leaves CharField with max_length alone', () => {
   const rule = ruleByCode('DOL014');
   const findings = rule.check(
@@ -225,6 +243,14 @@ test('DOL015 flags TextField(max_length=X)', () => {
   );
   assert.equal(findings.length, 1);
   assert.equal(findings[0].applicability, 'suggestion');
+});
+
+test('DOL015 reads past nested calls before max_length', () => {
+  const rule = ruleByCode('DOL015');
+  const findings = rule.check(
+    makeCtx('bio = models.TextField(max_length=1000, verbose_name=_("Bio"))'),
+  );
+  assert.equal(findings.length, 1);
 });
 
 test('DOL015 leaves plain TextField alone', () => {

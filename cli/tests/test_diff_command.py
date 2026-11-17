@@ -299,6 +299,42 @@ class DiffCommandCLITest(unittest.TestCase):
                 code = main(["diff", str(old_p), str(new_p), "--exit-zero"])
             self.assertEqual(code, 0)
 
+    def test_mixed_list_and_scan_dumps_compare_models_only(self) -> None:
+        """A list dump has no field data. Compared with a full dump it must
+        not report every field as removed; model additions still count."""
+        scan = _schema(_model("blog", "Post", [_scalar("title")]))
+        list_dump = [
+            {"app": "blog", "model": "Post"},
+            {"app": "blog", "model": "Comment"},
+        ]
+
+        result = diff_schemas(scan, list_dump)
+
+        self.assertEqual(result.added_models, ["blog.Comment"])
+        self.assertEqual(result.removed_fields, [])
+        self.assertEqual(result.changed_fields, [])
+        self.assertEqual(result.removed_relations, [])
+
+    def test_list_format_dump_is_compared(self) -> None:
+        """``list --format json`` writes a flat ``[{app, model}]`` array — the
+        other input shape ``diff --help`` documents. Both sides used to index
+        as empty, so a model added in the PR printed "No schema changes." and
+        exited 0."""
+        before = [{"app": "blog", "model": "Post"}]
+        after = [
+            {"app": "blog", "model": "Post"},
+            {"app": "blog", "model": "Comment"},
+        ]
+        with TemporaryDirectory() as tmp:
+            old_p = Path(tmp) / "before.json"
+            new_p = Path(tmp) / "after.json"
+            old_p.write_text(json.dumps(before), encoding="utf-8")
+            new_p.write_text(json.dumps(after), encoding="utf-8")
+            with patch("sys.stdout", new=StringIO()) as stdout:
+                code = main(["diff", str(old_p), str(new_p)])
+            self.assertEqual(code, 1)
+            self.assertIn("+ blog.Comment", stdout.getvalue())
+
     def test_json_format_output_is_valid_json(self) -> None:
         old = _schema(_model("blog", "Post", [_scalar("title")]))
         new = _schema(
