@@ -70,6 +70,51 @@ test('DOL002 flags qs.count() == 0', () => {
   assert.equal(findings[0].fixHint, 'Foo.objects');
 });
 
+// The count is one operand of a larger expression here, so Python compares
+// the whole expression with 0: rewriting only `qs.count() > 0` changes what
+// the condition means (`capacity - True` is truthy when the event is full),
+// and `x - not qs.exists()` is a SyntaxError.
+test('DOL001-DOL004 skip a match that is an operand of an operator', () => {
+  for (const [code, line] of [
+    ['DOL001', 'if event.capacity - event.registrations.count() > 0:'],
+    ['DOL001', 'if 2 * order.items.count() > 0:'],
+    ['DOL001', 'if limit < qs.count() > 0:'],
+    ['DOL002', 'is_full = event.capacity - event.registrations.count() == 0'],
+    ['DOL002', 'if a.count() + b.count() == 0:'],
+    ['DOL003', 'if prev == qs.first() is None:'],
+    ['DOL004', 'if prev == qs.first() is not None:'],
+  ]) {
+    assert.equal(ruleByCode(code).check(makeCtx(line)).length, 0, line);
+  }
+});
+
+// Unary - and ~ bind tighter than a comparison: `-qs.count() > 0` is
+// `(-qs.count()) > 0`, always False, while the rewrite `-qs.exists()` is
+// truthy whenever a row exists. So skipping them is correct, not a gap.
+test('DOL001 and DOL002 skip a count under unary - or ~', () => {
+  for (const [code, line] of [
+    ['DOL001', 'if -qs.count() > 0:'],
+    ['DOL002', 'if ~qs.count() == 0:'],
+  ]) {
+    assert.equal(ruleByCode(code).check(makeCtx(line)).length, 0, line);
+  }
+});
+
+test('DOL001 and DOL002 still flag a count after =, not, and, (, comma, augmented =', () => {
+  for (const [code, line] of [
+    ['DOL001', 'has_any = qs.count() > 0'],
+    ['DOL001', 'if not post.comments.count() > 0:'],
+    ['DOL001', 'if ok and qs.count() > 0:'],
+    ['DOL001', 'print(qs.count() > 0)'],
+    ['DOL002', 'f(x, qs.count() == 0)'],
+    ['DOL002', 'flag |= qs.count() == 0'],
+    ['DOL001', 'n += qs.count() > 0'],
+    ['DOL001', 'n <<= qs.count() > 0'],
+  ]) {
+    assert.equal(ruleByCode(code).check(makeCtx(line)).length, 1, line);
+  }
+});
+
 test('DOL003 flags qs.first() is None', () => {
   const rule = ruleByCode('DOL003');
   const findings = rule.check(

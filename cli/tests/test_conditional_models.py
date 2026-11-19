@@ -306,5 +306,170 @@ class PlainClassBeforeBlocksTest(unittest.TestCase):
         self.assertEqual([f.name for f in got[0].fields], ["owner"])
 
 
+class ConditionalBodyFieldTests(unittest.TestCase):
+    def test_fields_under_complete_if_elif_else_are_collected_and_partial_ignored(self) -> None:
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "class Article(models.Model):\n"
+            "    title = models.CharField(max_length=120)\n"
+            "    if True:\n"
+            "        body = models.TextField()\n"
+            "        slug = models.SlugField()\n"
+            "    elif False:\n"
+            "        body = models.CharField(max_length=500)\n"
+            "        subtitle = models.CharField(max_length=80)\n"
+            "    else:\n"
+            "        body = models.CharField(max_length=255)\n"
+            "    published = models.BooleanField(default=False)\n"
+        )
+        got = parse_models_file("blog/models.py", src)
+        self.assertEqual([m.name for m in got], ["Article"])
+        self.assertEqual(
+            [f.name for f in got[0].fields],
+            ["title", "body", "published"],
+        )
+        body_field = next(f for f in got[0].fields if f.name == "body")
+        self.assertEqual(body_field.type, "TextField")
+
+    def test_swapper_disjoint_branches_and_if_without_else_stay_excluded(self) -> None:
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "class HomePage(models.Model):\n"
+            "    title = models.CharField(max_length=120)\n"
+            "    if swapper.is_swapped('wagtailcore', 'Page'):\n"
+            "        basepage_ptr = models.OneToOneField('core.Page', on_delete=models.CASCADE)\n"
+            "    else:\n"
+            "        page_ptr = models.OneToOneField('wagtailcore.Page', on_delete=models.CASCADE)\n"
+            "    if HAS_OPTIONAL:\n"
+            "        optional_only = models.BooleanField(default=False)\n"
+            "    if A:\n"
+            "        no_else_chain = models.TextField()\n"
+            "    elif B:\n"
+            "        no_else_chain = models.CharField(max_length=50)\n"
+        )
+        got = parse_models_file("home/models.py", src)
+        self.assertEqual([m.name for m in got], ["HomePage"])
+        self.assertEqual([f.name for f in got[0].fields], ["title"])
+
+    def test_nested_if_and_try_except_fields_collected_while_method_locals_ignored(self) -> None:
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "class Account(models.Model):\n"
+            "    owner = models.ForeignKey('auth.User', on_delete=models.CASCADE)\n"
+            "    if True:\n"
+            "        if True:\n"
+            "            tier = models.CharField(max_length=20)\n"
+            "        else:\n"
+            "            tier = models.IntegerField()\n"
+            "        partial_outer = models.BooleanField(default=False)\n"
+            "    else:\n"
+            "        tier = models.SlugField()\n"
+            "    try:\n"
+            "        backup_code = models.CharField(max_length=32)\n"
+            "        only_try = models.IntegerField()\n"
+            "    except Exception:\n"
+            "        backup_code = models.TextField()\n"
+            "        only_except = models.BooleanField(default=True)\n"
+            "\n"
+            "    def helper(self):\n"
+            "        if True:\n"
+            "            local_only = models.IntegerField()\n"
+            "        else:\n"
+            "            local_only = models.TextField()\n"
+            "        return local_only\n"
+            "\n"
+            "    class Meta:\n"
+            "        db_table = 'account'\n"
+            "\n"
+            "    active = models.BooleanField(default=True)\n"
+        )
+        got = parse_models_file("accounts/models.py", src)
+        self.assertEqual([m.name for m in got], ["Account"])
+        self.assertEqual(
+            [f.name for f in got[0].fields],
+            ["owner", "tier", "backup_code", "active"],
+        )
+        self.assertEqual(got[0].meta.get("db_table"), "'account'")
+
+    def test_unconditional_declaration_replaces_earlier_conditional_field(self) -> None:
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "class A(models.Model):\n"
+            "    if True:\n"
+            "        x = models.TextField()\n"
+            "    else:\n"
+            "        x = models.SlugField()\n"
+            "    x = models.IntegerField()\n"
+            "    if False:\n"
+            "        x = models.FloatField()\n"
+            "    else:\n"
+            "        x = models.BooleanField()\n"
+            "    y = models.CharField(max_length=10)\n"
+            "    if True:\n"
+            "        y = models.TextField()\n"
+            "    else:\n"
+            "        y = models.SlugField()\n"
+        )
+        got = parse_models_file("blog/models.py", src)
+        self.assertEqual([m.name for m in got], ["A"])
+        self.assertEqual([f.name for f in got[0].fields], ["x", "y"])
+        by_name = {f.name: f for f in got[0].fields}
+        self.assertEqual(by_name["x"].type, "IntegerField")
+        self.assertEqual(by_name["y"].type, "CharField")
+
+    def test_header_walrus_triple_quote_multiline_method_and_continuation_parens(self) -> None:
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "class EdgeModel(models.Model):\n"
+            "    if enabled := '''it's active''':\n"
+            "        options = (\n"
+            "            'postgres',\n"
+            "    )\n"
+            "        def helper(\n"
+            "            self,\n"
+            "        local_only=models.IntegerField(),\n"
+            "        ):\n"
+            "            return local_only\n"
+            "        title = models.TextField()\n"
+            "    elif other := True:\n"
+            "        title = models.CharField(max_length=50)\n"
+            "    else:\n"
+            "        title = models.SlugField()\n"
+        )
+        got = parse_models_file("edge/models.py", src)
+        self.assertEqual([m.name for m in got], ["EdgeModel"])
+        self.assertEqual([f.name for f in got[0].fields], ["title"])
+        self.assertEqual(got[0].fields[0].type, "TextField")
+
+    def test_try_body_fields_kept_with_finally_and_intersected_with_except(self) -> None:
+        src = (
+            "from django.db import models\n"
+            "\n"
+            "class Article(models.Model):\n"
+            "    try:\n"
+            "        title = models.TextField()\n"
+            "    finally:\n"
+            "        pass\n"
+            "\n"
+            "class Note(models.Model):\n"
+            "    try:\n"
+            "        body = models.TextField()\n"
+            "        only_try = models.IntegerField()\n"
+            "    except Exception:\n"
+            "        body = models.CharField(max_length=10)\n"
+            "    finally:\n"
+            "        stamp = models.DateTimeField()\n"
+        )
+        got = parse_models_file("news/models.py", src)
+        self.assertEqual([m.name for m in got], ["Article", "Note"])
+        self.assertEqual([f.name for f in got[0].fields], ["title"])
+        self.assertEqual([f.name for f in got[1].fields], ["body", "stamp"])
+
+
 if __name__ == "__main__":
     unittest.main()

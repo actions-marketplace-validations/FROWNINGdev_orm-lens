@@ -27,7 +27,9 @@ jobs:
           path: orm-lens.vsix
 
   python-cli:
-    runs-on: ubuntu-latest
+    # ubuntu-latest is 26.04 now, and setup-python has no 3.9 build for it.
+    # Only the 3.9 pair stays on 24.04; everything else follows latest.
+    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       # Explicit pairs instead of a cross product. The Python axis is the one
@@ -40,7 +42,7 @@ jobs:
       # life and were dropped from the matrix.
       matrix:
         include:
-          - { python-version: "3.9", django-version: "4.2" }
+          - { python-version: "3.9", django-version: "4.2", os: ubuntu-24.04 }
           - { python-version: "3.10", django-version: "4.2" }
           - { python-version: "3.11", django-version: "4.2" }
           - { python-version: "3.11", django-version: "5.2" }

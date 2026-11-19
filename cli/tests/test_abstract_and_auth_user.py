@@ -136,6 +136,33 @@ class AuthUserResolutionTest(unittest.TestCase):
         user = _StubModel("User", ["AbstractUser"])
         self.assertTrue(_rel_matches_target("accounts.User", "User", user))
         self.assertTrue(_rel_matches_target("User", "User", user))
+        self.assertTrue(
+            _rel_matches_target("accounts.User", "User", user, "accounts")
+        )
+        self.assertTrue(_rel_matches_target("User", "User", user, "accounts"))
+
+    def test_rel_qualified_reference_requires_the_same_app(self):
+        user = _StubModel("User", ["AbstractUser"])
+        self.assertFalse(
+            _rel_matches_target(
+                "billing.User", "User", user, "accounts", {"accounts", "billing"}
+            )
+        )
+
+    def test_rel_app_config_label_matches_when_no_app_has_it(self):
+        """``wagtailimages`` is an ``AppConfig`` label for ``images/``, not a
+        workspace app name. Filtering by that prefix dropped every row, so a
+        label no app answers to matches on the model name alone."""
+        self.assertTrue(
+            _rel_matches_target(
+                "wagtailimages.Image", "Image", None, "images", {"images"}
+            )
+        )
+        self.assertTrue(
+            _rel_matches_target(
+                "billing.User", "User", None, "accounts", {"accounts"}
+            )
+        )
 
     def test_rel_match_settings_auth_user_model(self):
         user = _StubModel("User", ["AbstractUser"])

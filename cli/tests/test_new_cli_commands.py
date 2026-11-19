@@ -105,6 +105,169 @@ class CascadeCommandTest(unittest.TestCase):
             self.assertEqual(payload["protected"][0]["via_field"], "protected_parent")
             self.assertTrue(payload["protected"][0]["self"])
 
+    def test_abstract_base_relations_are_included(self) -> None:
+        """Django copies an abstract base's fields onto every concrete child's
+        table. ``cascade_preview`` read only ``model.fields``, so an FK declared
+        on the base was invisible and deleting the target looked isolated."""
+        with TemporaryDirectory() as tmp:
+            _write(
+                Path(tmp) / "shop" / "models.py",
+                "from django.db import models\n\n"
+                "class Owner(models.Model):\n"
+                "    name = models.CharField(max_length=10)\n\n"
+                "class Owned(models.Model):\n"
+                "    owner = models.ForeignKey(\n"
+                "        Owner, on_delete=models.CASCADE,\n"
+                "        related_name='owned_%(class)s',\n"
+                "    )\n"
+                "    class Meta:\n"
+                "        abstract = True\n\n"
+                "class Post(Owned):\n"
+                "    title = models.CharField(max_length=10)\n\n"
+                "class Comment(Owned):\n"
+                "    body = models.CharField(max_length=10)\n",
+            )
+            code, out, _err = _run(
+                ["cascade", "shop.Owner", "--path", tmp, "--format", "json"]
+            )
+            self.assertEqual(code, 0)
+            payload = json.loads(out)
+            self.assertEqual(
+                {entry["model"] for entry in payload["cascade_kills"]},
+                {"shop.Comment", "shop.Post"},
+            )
+            self.assertEqual(
+                {entry["via_field"] for entry in payload["cascade_kills"]},
+                {"owner"},
+            )
+
+    def test_qualified_target_in_another_app_is_not_matched(self) -> None:
+        """Two apps can define the same model name. A FK written as
+        ``billing.Owner`` belongs to that app, not to ``shop.Owner``."""
+        with TemporaryDirectory() as tmp:
+            _write(
+                Path(tmp) / "shop" / "models.py",
+                "from django.db import models\n\n"
+                "class Owner(models.Model):\n"
+                "    name = models.CharField(max_length=10)\n\n"
+                "class Post(models.Model):\n"
+                "    owner = models.ForeignKey('billing.Owner', on_delete=models.CASCADE)\n",
+            )
+            _write(
+                Path(tmp) / "billing" / "models.py",
+                "from django.db import models\n\n"
+                "class Owner(models.Model):\n"
+                "    name = models.CharField(max_length=10)\n",
+            )
+
+            code, out, _err = _run(
+                ["cascade", "shop.Owner", "--path", tmp, "--format", "json"]
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out)["cascade_kills"], [])
+
+            code, out, _err = _run(
+                ["cascade", "billing.Owner", "--path", tmp, "--format", "json"]
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                [entry["model"] for entry in json.loads(out)["cascade_kills"]],
+                ["shop.Post"],
+            )
+
+    def test_app_config_label_prefix_falls_back_to_model_name(self) -> None:
+        """A FK string carries Django's app *label*, which an ``AppConfig``
+        can set to something other than the directory name. Wagtail labels
+        its ``images/`` app ``wagtailimages``, so ``"wagtailimages.Image"``
+        names the model in ``images``: filtering by directory name dropped
+        every such row from the preview. A row that exists but is missing is
+        the worst way for a delete preview to be wrong."""
+        with TemporaryDirectory() as tmp:
+            _write(
+                Path(tmp) / "images" / "models.py",
+                "from django.db import models\n\n"
+                "class Image(models.Model):\n"
+                "    title = models.CharField(max_length=10)\n",
+            )
+            _write(
+                Path(tmp) / "wagtail" / "models.py",
+                "from django.db import models\n\n"
+                "class Site(models.Model):\n"
+                "    hostname = models.CharField(max_length=10)\n",
+            )
+            _write(
+                Path(tmp) / "redirects" / "models.py",
+                "from django.db import models\n\n"
+                "class Redirect(models.Model):\n"
+                "    site = models.ForeignKey(\n"
+                "        'wagtailcore.Site', on_delete=models.CASCADE,\n"
+                "    )\n"
+                "    image = models.ForeignKey(\n"
+                "        'wagtailimages.Image', on_delete=models.CASCADE,\n"
+                "    )\n",
+            )
+
+            code, out, _err = _run(
+                ["cascade", "images.Image", "--path", tmp, "--format", "json"]
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                [
+                    (entry["model"], entry["via_field"])
+                    for entry in json.loads(out)["cascade_kills"]
+                ],
+                [("redirects.Redirect", "image")],
+            )
+
+            code, out, _err = _run(
+                ["cascade", "wagtail.Site", "--path", tmp, "--format", "json"]
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                [
+                    (entry["model"], entry["via_field"])
+                    for entry in json.loads(out)["cascade_kills"]
+                ],
+                [("redirects.Redirect", "site")],
+            )
+
+    def test_qualified_inherited_relation_is_not_matched(self) -> None:
+        """The app label of an inherited FK is matched too, not just the name."""
+        with TemporaryDirectory() as tmp:
+            _write(
+                Path(tmp) / "shop" / "models.py",
+                "from django.db import models\n\n"
+                "class Owner(models.Model):\n"
+                "    name = models.CharField(max_length=10)\n\n"
+                "class BillingOwned(models.Model):\n"
+                "    owner = models.ForeignKey('billing.Owner', on_delete=models.CASCADE)\n"
+                "    class Meta:\n"
+                "        abstract = True\n\n"
+                "class Post(BillingOwned):\n"
+                "    title = models.CharField(max_length=10)\n",
+            )
+            _write(
+                Path(tmp) / "billing" / "models.py",
+                "from django.db import models\n\n"
+                "class Owner(models.Model):\n"
+                "    name = models.CharField(max_length=10)\n",
+            )
+
+            code, out, _err = _run(
+                ["cascade", "shop.Owner", "--path", tmp, "--format", "json"]
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out)["cascade_kills"], [])
+
+            code, out, _err = _run(
+                ["cascade", "billing.Owner", "--path", tmp, "--format", "json"]
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                [entry["model"] for entry in json.loads(out)["cascade_kills"]],
+                ["shop.Post"],
+            )
+
     def test_django_61_db_level_policies_are_bucketed(self) -> None:
         """DB_CASCADE / DB_SET_NULL / DB_SET_DEFAULT (Django 6.1) used to fall
         out of every bucket, so the delete looked isolated while the

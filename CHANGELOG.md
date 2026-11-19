@@ -7,11 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **VS Code rules DOL001-DOL004 skip a match that is an operand of an operator**
+  ([#293](https://github.com/FROWNINGdev/orm-lens/issues/293)).
+  In `if event.capacity - event.registrations.count() > 0:` Python tests the
+  whole difference, so the safe fix `event.capacity - event.registrations.exists()`
+  made a full event look open, and DOL002's rewrite
+  `event.capacity - not event.registrations.exists()` was a SyntaxError. Matches after an arithmetic, bitwise or comparison operator are
+  now left alone; assignment and augmented assignment still get the finding.
+
 ## [py-1.18.1] - 2026-11-17
 
 > Fewer false N+1, drift and migration alarms on real projects.
 
 ### Fixed
+
+- **parser: collect fields declared inside class-body conditional blocks**
+  ([#253](https://github.com/FROWNINGdev/orm-lens/issues/253)).
+  Fields declared across every branch of a complete class-body `if`/`elif`/`else`
+  or `try`/`except` chain (or in `finally`, including nested chains) are now
+  extracted keeping the first definition (with an unconditional declaration
+  replacing an earlier conditional one), while partial/unmatched conditional
+  fields, method locals, and nested non-`Meta` classes remain ignored.
+  Python parser only (`src/parser.ts` not updated).
 
 - **migration-risk: treat annotated or partly computed `dependencies` as unknown**
   ([#280](https://github.com/FROWNINGdev/orm-lens/issues/280)).
@@ -42,6 +61,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workspace mixins from dropping out of the model list. In addition, abstract base cycle detection
   is now keyed on `(file, class)` rather than bare class name, so an abstract mixin extending a
   same-named mixin in another module no longer drops inherited fields.
+
+- **cascade / find_relations: resolve inbound relations by app and inherited fields.**
+  Django copies an abstract base's fields onto every concrete child's table,
+  but both tools read only the class body's `fields`. An FK on an `Owned`
+  mixin was invisible: `cascade` said the delete was isolated and
+  `find_relations` showed no outbound edge. The inbound match also compared
+  only the model name, so `ForeignKey("billing.Owner")` appeared under
+  `shop.Owner` when both apps define `Owner`. Both now read `all_fields()`
+  and compare the app label of a qualified reference. A label that names no
+  workspace app keeps matching by model name alone: an `AppConfig` can rename
+  an app (`ForeignKey("wagtailimages.Image")` for an `images/` app), and a
+  delete preview must not hide a row it cannot disprove.
 
 - **nplusone: `Prefetch(..., queryset=...select_related(...))` covers the inner loop.**
   `Prefetch("items", queryset=OrderItem.objects.select_related("product"))` loads

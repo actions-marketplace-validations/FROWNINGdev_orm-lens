@@ -437,6 +437,187 @@ def _result_text(result) -> str:
     return "".join(getattr(block, "text", "") for block in content)
 
 
+class InheritedRelationToolsTest(unittest.TestCase):
+    """Fields copied from an abstract base live on the child's table, so the
+    relation tools must read ``all_fields()``, not only the class body."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="djol-inherited-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        (self.tmp / "manage.py").write_text("", encoding="utf-8")
+        app = self.tmp / "shop"
+        app.mkdir()
+        (app / "__init__.py").write_text("", encoding="utf-8")
+        (app / "models.py").write_text(
+            "from django.db import models\n\n"
+            "class Owner(models.Model):\n"
+            "    name = models.CharField(max_length=10)\n\n"
+            "class Owned(models.Model):\n"
+            "    owner = models.ForeignKey(Owner, on_delete=models.CASCADE)\n"
+            "    class Meta:\n"
+            "        abstract = True\n\n"
+            "class Post(Owned):\n"
+            "    title = models.CharField(max_length=10)\n\n"
+            "class Comment(Owned):\n"
+            "    body = models.CharField(max_length=10)\n",
+            encoding="utf-8",
+        )
+        clear_cache()
+        self.addCleanup(clear_cache)
+
+    def test_cascade_preview_lists_inherited_relations(self) -> None:
+        payload = json.loads(
+            _tool_cascade_preview(
+                {
+                    "workspace_root": str(self.tmp),
+                    "app_label": "shop",
+                    "model_name": "Owner",
+                }
+            )
+        )
+        self.assertEqual(
+            {entry["model"] for entry in payload["cascade_kills"]},
+            {"shop.Comment", "shop.Post"},
+        )
+
+    def test_find_relations_lists_inherited_relations(self) -> None:
+        post = json.loads(
+            _tool_find_relations(
+                {"workspace_root": str(self.tmp), "model": "shop.Post"}
+            )
+        )
+        self.assertIn("owner", [rel["field"] for rel in post["outbound"]])
+
+        owner = json.loads(
+            _tool_find_relations(
+                {"workspace_root": str(self.tmp), "model": "shop.Owner"}
+            )
+        )
+        self.assertEqual(
+            {rel["from"] for rel in owner["inbound"]},
+            {"shop.Comment", "shop.Post"},
+        )
+
+
+class QualifiedRelationTargetTest(unittest.TestCase):
+    """A qualified ``billing.Owner`` must not match ``shop.Owner``."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="djol-qualified-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        (self.tmp / "manage.py").write_text("", encoding="utf-8")
+        shop = self.tmp / "shop"
+        shop.mkdir()
+        (shop / "__init__.py").write_text("", encoding="utf-8")
+        (shop / "models.py").write_text(
+            "from django.db import models\n\n"
+            "class Owner(models.Model):\n"
+            "    name = models.CharField(max_length=10)\n\n"
+            "class BillingOwned(models.Model):\n"
+            "    owner = models.ForeignKey('billing.Owner', on_delete=models.CASCADE)\n"
+            "    class Meta:\n"
+            "        abstract = True\n\n"
+            "class Post(BillingOwned):\n"
+            "    title = models.CharField(max_length=10)\n",
+            encoding="utf-8",
+        )
+        billing = self.tmp / "billing"
+        billing.mkdir()
+        (billing / "__init__.py").write_text("", encoding="utf-8")
+        (billing / "models.py").write_text(
+            "from django.db import models\n\n"
+            "class Owner(models.Model):\n"
+            "    name = models.CharField(max_length=10)\n",
+            encoding="utf-8",
+        )
+        clear_cache()
+        self.addCleanup(clear_cache)
+
+    def test_find_relations_uses_the_target_app(self) -> None:
+        shop = json.loads(
+            _tool_find_relations(
+                {"workspace_root": str(self.tmp), "model": "shop.Owner"}
+            )
+        )
+        self.assertEqual(shop["inbound"], [])
+
+        post = json.loads(
+            _tool_find_relations(
+                {"workspace_root": str(self.tmp), "model": "shop.Post"}
+            )
+        )
+        self.assertIn("owner", [rel["field"] for rel in post["outbound"]])
+
+        billing = json.loads(
+            _tool_find_relations(
+                {"workspace_root": str(self.tmp), "model": "billing.Owner"}
+            )
+        )
+        self.assertEqual(
+            [rel["from"] for rel in billing["inbound"]], ["shop.Post"]
+        )
+
+
+class AppConfigLabelAliasTest(unittest.TestCase):
+    """A FK string carries the app *label*, which an ``AppConfig`` renames
+    (wagtail's ``images/`` app is labelled ``wagtailimages``). When no
+    workspace app is named ``wagtailimages``, the prefix cannot filter: the
+    row belongs to ``images.Image`` and must be reported."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="djol-label-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        (self.tmp / "manage.py").write_text("", encoding="utf-8")
+        images = self.tmp / "images"
+        images.mkdir()
+        (images / "__init__.py").write_text("", encoding="utf-8")
+        (images / "models.py").write_text(
+            "from django.db import models\n\n"
+            "class Image(models.Model):\n"
+            "    title = models.CharField(max_length=10)\n",
+            encoding="utf-8",
+        )
+        redirects = self.tmp / "redirects"
+        redirects.mkdir()
+        (redirects / "__init__.py").write_text("", encoding="utf-8")
+        (redirects / "models.py").write_text(
+            "from django.db import models\n\n"
+            "class Redirect(models.Model):\n"
+            "    image = models.ForeignKey(\n"
+            "        'wagtailimages.Image', on_delete=models.CASCADE,\n"
+            "    )\n",
+            encoding="utf-8",
+        )
+        clear_cache()
+        self.addCleanup(clear_cache)
+
+    def test_find_relations_matches_the_aliased_app(self) -> None:
+        payload = json.loads(
+            _tool_find_relations(
+                {"workspace_root": str(self.tmp), "model": "images.Image"}
+            )
+        )
+        self.assertEqual(
+            [(rel["from"], rel["field"]) for rel in payload["inbound"]],
+            [("redirects.Redirect", "image")],
+        )
+
+    def test_cascade_preview_matches_the_aliased_app(self) -> None:
+        payload = json.loads(
+            _tool_cascade_preview(
+                {
+                    "workspace_root": str(self.tmp),
+                    "app_label": "images",
+                    "model_name": "Image",
+                }
+            )
+        )
+        self.assertEqual(
+            [entry["model"] for entry in payload["cascade_kills"]],
+            ["redirects.Redirect"],
+        )
+
+
 class ImpactToolSchemaTest(unittest.TestCase):
     """``impact`` must accept the ``name`` argument its description asks for.
 

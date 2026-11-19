@@ -27,6 +27,7 @@ import sys
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -146,6 +147,181 @@ def _read_multiline_class(lines: Sequence[str], start: int):
                 return m, i
             return None, i
     return None, start
+
+
+_COND_OPENER_RE = re.compile(r"^\s*(if|elif|else|try|except|finally)\b")
+_METHOD_OR_CLASS_RE = re.compile(r"^\s*(?:(?:async\s+)?def|class)\s+")
+
+
+def _line_indent_width(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _find_block_header_end(lines: Sequence[str], start: int) -> int | None:
+    """Return the line index holding the terminating ``:`` of a compound header."""
+    depth = 0
+    quote: str | None = None
+    i = start
+    while i < len(lines):
+        line = lines[i]
+        idx = 0
+        n = len(line)
+        while idx < n:
+            ch = line[idx]
+            if quote is not None:
+                if ch == "\\" and idx + 1 < n:
+                    idx += 2
+                    continue
+                if len(quote) == 3:
+                    if line[idx : idx + 3] == quote:
+                        quote = None
+                        idx += 3
+                        continue
+                elif ch == quote:
+                    quote = None
+                idx += 1
+                continue
+            if ch == "#":
+                break
+            if line[idx : idx + 3] in ("'''", '"""'):
+                quote = line[idx : idx + 3]
+                idx += 3
+                continue
+            if ch in ("'", '"'):
+                quote = ch
+            elif ch in "([{":
+                depth += 1
+            elif ch in ")]}" and depth > 0:
+                depth -= 1
+            elif ch == ":" and depth == 0:
+                if idx + 1 < n and line[idx + 1] == "=":
+                    idx += 2
+                    continue
+                rest = line[idx + 1 :].lstrip()
+                if not rest or rest.startswith("#"):
+                    return i
+                return None
+            idx += 1
+        if depth == 0 and quote is None and not line.rstrip().endswith("\\"):
+            return None
+        i += 1
+    return None
+
+
+def _cond_block_header_end(lines: Sequence[str], start: int) -> tuple[str, int] | None:
+    """If ``lines[start]`` opens a conditional/try clause header, return ``(keyword, end_line)``."""
+    match = _COND_OPENER_RE.match(lines[start])
+    if not match:
+        return None
+    end_line = _find_block_header_end(lines, start)
+    if end_line is None:
+        return None
+    return match.group(1), end_line
+
+
+@dataclass
+class _FieldScope:
+    items: list[ParsedField] = dataclass_field(default_factory=list)
+    seen: set[str] = dataclass_field(default_factory=set)
+    cond_names: set[str] = dataclass_field(default_factory=set)
+
+
+@dataclass
+class _CondChain:
+    hdr_indent: int
+    kind: str  # "if" or "try"
+    body_indent: int | None = None
+    branches: list[_FieldScope] = dataclass_field(default_factory=list)
+    has_else: bool = False
+    section: str = "branch"  # "branch", "try_else", "finally"
+    try_else: _FieldScope = dataclass_field(default_factory=_FieldScope)
+    finally_scope: _FieldScope = dataclass_field(default_factory=_FieldScope)
+
+    def current_scope(self) -> _FieldScope:
+        if self.section == "try_else":
+            return self.try_else
+        if self.section == "finally":
+            return self.finally_scope
+        return self.branches[-1]
+
+    def can_continue(self, kw: str) -> bool:
+        if self.kind == "if":
+            return not self.has_else and kw in ("elif", "else")
+        return kw in ("except", "else", "finally")
+
+    def advance(self, kw: str) -> None:
+        self.body_indent = None
+        if self.kind == "if":
+            if kw == "else":
+                self.has_else = True
+            self.branches.append(_FieldScope())
+            return
+        if kw == "except":
+            self.section = "branch"
+            self.branches.append(_FieldScope())
+        elif kw == "else":
+            self.section = "try_else"
+        elif kw == "finally":
+            self.section = "finally"
+
+
+def _record_field(scope: _FieldScope, parsed_field: ParsedField, is_conditional: bool) -> None:
+    if is_conditional and parsed_field.name in scope.seen:
+        return
+    replaced_conditional = (not is_conditional) and (parsed_field.name in scope.cond_names)
+    scope.seen.add(parsed_field.name)
+    if is_conditional:
+        scope.cond_names.add(parsed_field.name)
+    if replaced_conditional:
+        scope.cond_names.discard(parsed_field.name)
+        idx = next(k for k, existing in enumerate(scope.items) if existing.name == parsed_field.name)
+        scope.items[idx] = parsed_field
+    else:
+        scope.items.append(parsed_field)
+
+
+def _scope_first_by_name(scope: _FieldScope) -> dict[str, ParsedField]:
+    by_name: dict[str, ParsedField] = {}
+    for parsed_field in scope.items:
+        by_name.setdefault(parsed_field.name, parsed_field)
+    return by_name
+
+
+def _intersect_branch_fields(scopes: Sequence[_FieldScope]) -> list[ParsedField]:
+    if not scopes:
+        return []
+    first = _scope_first_by_name(scopes[0])
+    common = set(first)
+    for scope in scopes[1:]:
+        common &= {parsed_field.name for parsed_field in scope.items}
+    return [parsed_field for name, parsed_field in first.items() if name in common]
+
+
+def _finalize_cond_chain(chain: _CondChain) -> list[ParsedField]:
+    """Return fields guaranteed across every path of *chain*."""
+    if chain.kind == "if":
+        if not chain.has_else:
+            return []
+        return _intersect_branch_fields(chain.branches)
+
+    guaranteed: list[ParsedField] = []
+    seen: set[str] = set()
+    success_scope = _FieldScope(items=[*chain.branches[0].items, *chain.try_else.items])
+    if len(chain.branches) > 1:
+        try_fields = _intersect_branch_fields([success_scope, *chain.branches[1:]])
+    else:
+        # With no `except`, an exception in the try body aborts the class body,
+        # so every class that gets created ran the whole try body.
+        try_fields = success_scope.items
+    for parsed_field in try_fields:
+        if parsed_field.name not in seen:
+            seen.add(parsed_field.name)
+            guaranteed.append(parsed_field)
+    for parsed_field in chain.finally_scope.items:
+        if parsed_field.name not in seen:
+            seen.add(parsed_field.name)
+            guaranteed.append(parsed_field)
+    return guaranteed
 
 
 def _detect_class_indent(lines: Sequence[str], class_line_idx: int) -> int:
@@ -626,6 +802,13 @@ def _field_import_aliases(lines: Sequence[str], in_string: frozenset[int]) -> di
     return aliases
 
 
+def _pop_cond_chain(cond_stack: list[_CondChain], root_scope: _FieldScope) -> None:
+    chain = cond_stack.pop()
+    target_scope = cond_stack[-1].current_scope() if cond_stack else root_scope
+    for pf in _finalize_cond_chain(chain):
+        _record_field(target_scope, pf, is_conditional=True)
+
+
 def _collect_defs(
     file_path: str,
     content: str,
@@ -717,6 +900,9 @@ def _collect_defs(
 
         indent = _detect_class_indent(lines, class_header_end)
         rx = _build_body_regexes(indent)
+        cond_stack: list[_CondChain] = []
+        skip_indent: int | None = None
+        root_scope = _FieldScope(items=model.fields)
 
         j = class_header_end + 1
         while j < len(lines):
@@ -743,11 +929,63 @@ def _collect_defs(
             # still stay inside the body. Lines inside strings were skipped above.
             if not class_indent and _COLUMN0_STATEMENT_RE.match(inner):
                 break
-            if not inner.strip():
+            stripped = inner.strip()
+            if not stripped or stripped.startswith("#"):
                 j += 1
                 continue
 
-            if rx["META_START_RE"].match(inner):
+            line_indent = _line_indent_width(inner)
+            if (cond_stack or skip_indent is not None) and stripped[0] in (")", "]", "}"):
+                j += 1
+                continue
+
+            if skip_indent is not None:
+                if line_indent > skip_indent:
+                    j += 1
+                    continue
+                skip_indent = None
+
+            cond_header = _cond_block_header_end(lines, j)
+
+            while cond_stack:
+                top = cond_stack[-1]
+                if top.body_indent is None:
+                    if line_indent > top.hdr_indent:
+                        top.body_indent = line_indent
+                        break
+                    if (
+                        cond_header is not None
+                        and line_indent == top.hdr_indent
+                        and top.can_continue(cond_header[0])
+                    ):
+                        break
+                    _pop_cond_chain(cond_stack, root_scope)
+                elif line_indent < top.body_indent:
+                    if (
+                        cond_header is not None
+                        and line_indent == top.hdr_indent
+                        and top.can_continue(cond_header[0])
+                    ):
+                        break
+                    _pop_cond_chain(cond_stack, root_scope)
+                else:
+                    break
+
+            if cond_stack and cond_header is not None:
+                top = cond_stack[-1]
+                if line_indent == top.hdr_indent and top.can_continue(cond_header[0]):
+                    top.advance(cond_header[0])
+                    j = cond_header[1] + 1
+                    continue
+
+            active_indent = (
+                cond_stack[-1].body_indent
+                if cond_stack and cond_stack[-1].body_indent is not None
+                else indent
+            )
+            active_rx = rx if active_indent == indent else _build_body_regexes(active_indent)
+
+            if not cond_stack and rx["META_START_RE"].match(inner):
                 k = j + 1
                 while k < len(lines):
                     if k in in_string:
@@ -764,19 +1002,40 @@ def _collect_defs(
                 j = k
                 continue
 
-            removed = rx["REMOVED_RE"].match(inner)
-            if removed:
-                # ``name = None`` drops a field inherited from an abstract base.
-                model.removed_fields.extend(re.split(r"\s*=\s*", removed[1]))
-                j += 1
-                continue
+            if line_indent == active_indent:
+                if cond_header is not None and cond_header[0] in ("if", "try"):
+                    cond_stack.append(
+                        _CondChain(
+                            hdr_indent=line_indent,
+                            kind=cond_header[0],
+                            branches=[_FieldScope()],
+                        )
+                    )
+                    j = cond_header[1] + 1
+                    continue
+                if _METHOD_OR_CLASS_RE.match(inner):
+                    skip_indent = line_indent
+                    hdr_end = _find_block_header_end(lines, j)
+                    j = hdr_end + 1 if hdr_end is not None else j + 1
+                    continue
 
-            alias_match = rx["ALIASED_FIELD_RE"].match(inner) if field_aliases else None
+            if not cond_stack:
+                removed = rx["REMOVED_RE"].match(inner)
+                if removed:
+                    # ``name = None`` drops a field inherited from an abstract base.
+                    model.removed_fields.extend(re.split(r"\s*=\s*", removed[1]))
+                    j += 1
+                    continue
+
+            alias_match = (
+                active_rx["ALIASED_FIELD_RE"].match(inner) if field_aliases else None
+            )
             aliased_type = field_aliases.get(alias_match[2]) if alias_match else None
             fm = (
                 alias_match
                 if aliased_type
-                else rx["FIELD_RE"].match(inner) or rx["BARE_FIELD_RE"].match(inner)
+                else active_rx["FIELD_RE"].match(inner)
+                or active_rx["BARE_FIELD_RE"].match(inner)
             )
             if fm:
                 fname, ftype = fm[1], aliased_type or fm[2]
@@ -792,7 +1051,7 @@ def _collect_defs(
                 )
                 is_rel = relation_kind is not None
                 inner = args_block.removesuffix(")")
-                field = ParsedField(
+                parsed_field = ParsedField(
                     name=fname,
                     type=ftype,
                     args=inner.strip(),
@@ -800,30 +1059,36 @@ def _collect_defs(
                     line_number=j,
                 )
                 if is_rel:
-                    field.relation_kind = relation_kind  # type: ignore[assignment]
-                    field.related_model = (
+                    parsed_field.relation_kind = relation_kind  # type: ignore[assignment]
+                    parsed_field.related_model = (
                         "taggit.Tag"
                         if ftype == "TaggableManager"
                         else _extract_related(inner)
                     )
-                    field.on_delete = _extract_on_delete(
+                    parsed_field.on_delete = _extract_on_delete(
                         inner, positional=relation_kind != "ManyToManyField"
                     )
-                    field.related_name = _extract_related_name(inner)
+                    parsed_field.related_name = _extract_related_name(inner)
                     if relation_kind == "ManyToManyField":
                         explicit_through = _extract_through_model(inner)
-                        field.through_model = (
+                        parsed_field.through_model = (
                             explicit_through
                             if explicit_through is not None
                             else "taggit.TaggedItem"
                             if ftype == "TaggableManager"
                             else None
                         )
-                model.fields.append(field)
+                target_scope = (
+                    cond_stack[-1].current_scope() if cond_stack else root_scope
+                )
+                _record_field(target_scope, parsed_field, is_conditional=False)
                 j = end_idx + 1
                 continue
 
             j += 1
+
+        while cond_stack:
+            _pop_cond_chain(cond_stack, root_scope)
 
         all_defs.append(model)
         i = j

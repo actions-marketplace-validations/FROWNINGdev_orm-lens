@@ -135,6 +135,20 @@ function parseLoopHead(line: string): { loopVar: string; source: string } | null
   return { loopVar: head[1], source: line.slice(start, i) };
 }
 
+/**
+ * True when the match at `col` is the right operand of an arithmetic,
+ * bitwise or comparison operator. Python then compares the whole operand
+ * expression, not the count alone: in `capacity - qs.count() > 0` the test is
+ * `(capacity - qs.count()) > 0`, so rewriting `qs.count() > 0` would change
+ * the meaning, and `capacity - not qs.exists()` is a SyntaxError. Assignment
+ * and augmented assignment (`=`, `|=`, `<<=`) are not operators here.
+ */
+function isOperand(line: string, col: number): boolean {
+  const before = line.slice(0, col).trimEnd();
+  if (/(?:<<|>>)=$/.test(before)) return false;
+  return /(?:[=!<>]=|[-+*/%@&|^~<>])$/.test(before);
+}
+
 function mayIterateQuerySet(expr: string): boolean {
   const callAt = expr.indexOf('(');
   if (callAt === -1) return true;
@@ -168,6 +182,7 @@ const DOL001: Rule = {
       RE_COUNT_GT_ZERO.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = RE_COUNT_GT_ZERO.exec(text)) !== null) {
+        if (isOperand(text, m.index)) continue;
         out.push({
           code: 'DOL001',
           messageId: 'default',
@@ -203,6 +218,7 @@ const DOL002: Rule = {
       RE_COUNT_EQ_ZERO.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = RE_COUNT_EQ_ZERO.exec(text)) !== null) {
+        if (isOperand(text, m.index)) continue;
         out.push({
           code: 'DOL002',
           messageId: 'default',
@@ -238,6 +254,7 @@ const DOL003: Rule = {
       RE_FIRST_IS_NONE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = RE_FIRST_IS_NONE.exec(text)) !== null) {
+        if (isOperand(text, m.index)) continue;
         out.push({
           code: 'DOL003',
           messageId: 'default',
@@ -273,6 +290,7 @@ const DOL004: Rule = {
       RE_FIRST_IS_NOT_NONE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = RE_FIRST_IS_NOT_NONE.exec(text)) !== null) {
+        if (isOperand(text, m.index)) continue;
         out.push({
           code: 'DOL004',
           messageId: 'default',

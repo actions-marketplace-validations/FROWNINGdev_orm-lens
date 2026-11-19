@@ -9,6 +9,7 @@ to their JSON, so a Django model serializes exactly as before.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -300,6 +301,66 @@ def resolve_related_tail(
     return tail
 
 
+def resolve_related_target(
+    related_model: str | None, user_model_name: str | None = None
+) -> tuple[str | None, str | None]:
+    """Return ``(app_label, model_name)`` for a relation reference.
+
+    ``app_label`` is ``None`` when the reference names no app: a bare
+    ``Model``, ``self``, or ``settings.AUTH_USER_MODEL``. The last one is
+    resolved to the workspace's user model, which can live in any app.
+    """
+    if not related_model:
+        return None, None
+    tail = related_model.rsplit(".", 1)[-1]
+    if tail == "AUTH_USER_MODEL":
+        return None, user_model_name
+    if "." not in related_model:
+        return None, tail
+    return related_model.rsplit(".", 1)[0], tail
+
+
+def workspace_app_names(index: WorkspaceIndex) -> set[str]:
+    """The app names the scan found, which is each app's directory name.
+
+    A relation string carries Django's app *label*, and an ``AppConfig`` can
+    set that label to something else (wagtail's ``images/`` app is labelled
+    ``wagtailimages``). Comparing the label against these names says whether
+    it names a workspace app at all, which is what
+    :func:`relation_points_at` needs to decide whether the label can filter.
+    """
+    return {app.name for app in index.apps}
+
+
+def relation_points_at(
+    related_model: str | None,
+    model_name: str,
+    app_name: str | None = None,
+    user_model_name: str | None = None,
+    known_apps: Collection[str] | None = None,
+) -> bool:
+    """True when ``related_model`` names ``app_name.model_name``.
+
+    A bare ``Model`` cannot name an app, so it matches by model name alone.
+    A qualified ``billing.Owner`` matches ``shop.Owner`` only when the app
+    labels agree: Django resolves the string against the app registry, and
+    two apps can define the same model name.
+
+    The prefix is an app *label*, not necessarily a directory name. When
+    ``known_apps`` (see :func:`workspace_app_names`) is given and the prefix
+    names none of those apps, the label is an ``AppConfig`` alias for an app
+    the scan knows under another name (``wagtailimages`` for ``images/``).
+    Nothing then says which app it meant, so it falls back to the model name
+    alone: a delete preview that hides a real row is the worse error.
+    """
+    target_app, target_name = resolve_related_target(related_model, user_model_name)
+    if target_name != model_name:
+        return False
+    if target_app is None or app_name is None or target_app == app_name:
+        return True
+    return known_apps is None or target_app not in known_apps
+
+
 def cascade_preview(index: WorkspaceIndex, ref: str) -> dict[str, Any]:
     """Preview what ``<Model>.delete()`` does to the rest of the schema.
 
@@ -335,17 +396,23 @@ def cascade_preview(index: WorkspaceIndex, ref: str) -> dict[str, Any]:
     }
     user_model = find_user_model(index)
     user_name = user_model.name if user_model is not None else None
+    known_apps = workspace_app_names(index)
     for app in index.apps:
         for other in app.models:
             is_self = other is m
-            for f in other.fields:
+            # Abstract-base fields are copied onto every concrete child's
+            # table, so they are inbound relations too. ``fields`` alone
+            # misses them: an Owned mixin's FK looked isolated.
+            for f in other.all_fields():
                 if not f.is_relation or not f.related_model:
                     continue
                 related_tail = resolve_related_tail(f.related_model, user_name)
                 if related_tail == "self":
                     if not is_self:
                         continue
-                elif related_tail != m.name:
+                elif not relation_points_at(
+                    f.related_model, m.name, target_app, user_name, known_apps
+                ):
                     continue
                 on_delete = (f.on_delete or "").upper()
                 entry: dict[str, Any] = {
