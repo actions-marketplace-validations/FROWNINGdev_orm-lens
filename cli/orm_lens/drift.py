@@ -58,6 +58,18 @@ _STRUCTURAL_OPS = frozenset(
     }
 )
 
+# Django binds these constructor arguments in the order below. ``makemigrations``
+# spells them out as keywords, but hand-written migrations often pass them
+# positionally — both forms must land in the same slots (#303).
+_POSITIONAL: dict[str, tuple[str, ...]] = {
+    "CreateModel": ("name", "fields"),
+    "DeleteModel": ("name",),
+    "RenameModel": ("old_name", "new_name"),
+    "AddField": ("model_name", "name", "field"),
+    "RemoveField": ("model_name", "name"),
+    "RenameField": ("model_name", "old_name", "new_name"),
+}
+
 # Django adds these itself unless told otherwise, so a migration that omits
 # them is not drift.
 _IMPLICIT_FIELDS = frozenset({"id"})
@@ -136,31 +148,93 @@ def _op_name(call: ast.Call) -> str | None:
     return None
 
 
-def _kwarg(call: ast.Call, name: str) -> Any:
+def _overrides_operation_state(node: ast.ClassDef) -> bool:
+    names = {"__init__", "state_forwards"}
+    for stmt in node.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name in names:
+            return True
+        if isinstance(stmt, ast.Assign):
+            targets = stmt.targets
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            targets = [stmt.target]
+        else:
+            continue
+        if any(
+            isinstance(part, ast.Name) and isinstance(part.ctx, ast.Store) and part.id in names
+            for target in targets
+            for part in ast.walk(target)
+        ):
+            return True
+    return False
+
+
+def _local_structural_ops(tree: ast.Module) -> dict[str, str | None]:
+    """Recognize simple local subclasses of structural migration operations."""
+    resolved: dict[str, str | None] = {}
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        operation = None
+        if (
+            len(node.bases) == 1
+            and not node.decorator_list
+            and not node.keywords
+            and not _overrides_operation_state(node)
+        ):
+            base = node.bases[0]
+            if isinstance(base, ast.Name):
+                operation = resolved.get(base.id, base.id if base.id in _STRUCTURAL_OPS else None)
+            elif (
+                isinstance(base, ast.Attribute)
+                and isinstance(base.value, ast.Name)
+                and base.value.id == "migrations"
+                and base.attr in _STRUCTURAL_OPS
+            ):
+                operation = base.attr
+        resolved[node.name] = operation
+    return resolved
+
+
+def _arg_node(call: ast.Call, op: str | None, name: str) -> ast.expr | None:
+    """The AST node bound to ``name``, keyword or positional.
+
+    Keywords win, matching Python: an explicit ``name=`` overrides any value
+    that happens to sit in that position. Only then is the argument looked up
+    by Django's declared order for ``op``.
+    """
     for kw in call.keywords:
         if kw.arg == name:
-            return _literal_or_none(kw.value)
+            return kw.value
+    names = _POSITIONAL.get(op or "", ())
+    if name in names:
+        index = names.index(name)
+        if index < len(call.args):
+            return call.args[index]
     return None
 
 
-def _create_model_fields(call: ast.Call) -> list[str]:
+def _arg(call: ast.Call, op: str | None, name: str) -> Any:
+    node = _arg_node(call, op, name)
+    return _literal_or_none(node) if node is not None else None
+
+
+def _create_model_fields(call: ast.Call, op: str | None = None) -> list[str]:
     """Field names out of ``CreateModel(fields=[("title", ...), ...])``.
 
     The second element of each pair is a field *constructor call*, which
     ``ast.literal_eval`` cannot touch — so the names are read positionally
-    rather than by evaluating the list.
+    rather than by evaluating the list. ``fields`` itself may be keyword or
+    positional (#303).
     """
+    node = _arg_node(call, op, "fields")
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        return []
     names: list[str] = []
-    for kw in call.keywords:
-        if kw.arg != "fields":
-            continue
-        if not isinstance(kw.value, (ast.List, ast.Tuple)):
-            continue
-        for item in kw.value.elts:
-            if isinstance(item, (ast.Tuple, ast.List)) and item.elts:
-                first = item.elts[0]
-                if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                    names.append(first.value)
+    for item in node.elts:
+        if isinstance(item, (ast.Tuple, ast.List)) and item.elts:
+            first = item.elts[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                names.append(first.value)
     return names
 
 
@@ -307,35 +381,35 @@ def _operations(tree: ast.AST) -> list[ast.Call]:
 
 def _apply(state: dict[str, set[str]], op: str, call: ast.Call) -> None:
     if op == "CreateModel":
-        name = _kwarg(call, "name")
+        name = _arg(call, op, "name")
         if isinstance(name, str):
-            state[name.lower()] = set(_create_model_fields(call)) - _IMPLICIT_FIELDS
+            state[name.lower()] = set(_create_model_fields(call, op)) - _IMPLICIT_FIELDS
         return
     if op == "DeleteModel":
-        name = _kwarg(call, "name")
+        name = _arg(call, op, "name")
         if isinstance(name, str):
             state.pop(name.lower(), None)
         return
     if op == "RenameModel":
-        old, new = _kwarg(call, "old_name"), _kwarg(call, "new_name")
+        old, new = _arg(call, op, "old_name"), _arg(call, op, "new_name")
         if isinstance(old, str) and isinstance(new, str):
             state[new.lower()] = state.pop(old.lower(), set())
         return
 
-    model = _kwarg(call, "model_name")
+    model = _arg(call, op, "model_name")
     if not isinstance(model, str):
         return
     fields = state.setdefault(model.lower(), set())
     if op == "AddField":
-        name = _kwarg(call, "name")
+        name = _arg(call, op, "name")
         if isinstance(name, str):
             fields.add(name)
     elif op == "RemoveField":
-        name = _kwarg(call, "name")
+        name = _arg(call, op, "name")
         if isinstance(name, str):
             fields.discard(name)
     elif op == "RenameField":
-        old, new = _kwarg(call, "old_name"), _kwarg(call, "new_name")
+        old, new = _arg(call, op, "old_name"), _arg(call, op, "new_name")
         if isinstance(old, str) and isinstance(new, str):
             fields.discard(old)
             fields.add(new)
@@ -365,8 +439,11 @@ def replay_app(migrations_dir: Path) -> tuple[dict[str, set[str]], int]:
     # `AppConfig.label` overrides it; `_replay_order` checks the dependency
     # tuples before trusting it.
     for _path, tree in _replay_order(parsed, app_label=migrations_dir.parent.name):
+        local_ops = _local_structural_ops(tree)
         for call in _operations(tree):
             op = _op_name(call)
+            if isinstance(call.func, ast.Name):
+                op = local_ops.get(call.func.id, op)
             if op in _STRUCTURAL_OPS:
                 _apply(state, op, call)
     return state, replayed

@@ -11,7 +11,7 @@ Mỗi mã `DOL` là một rule lint mà extension VS Code áp dụng ngay khi b�
 | [DOL003](DOL003.md) | Tránh `list(queryset)` trong ngữ cảnh boolean | info | safe |
 | [DOL004](DOL004.md) | Dùng `.only()` / `.defer()` để giới hạn trường được tải | info | unsafe |
 | [DOL005](DOL005.md) | Tránh gọi `.all()` trước `.filter()` | info | safe |
-| [DOL006](DOL006.md) | Dùng `.iterator()` cho queryset lớn | warning | unsafe |
+| [DOL006](DOL006.md) | Bỏ `list()` khi duyệt QuerySet | info | suggestion |
 | [DOL007](DOL007.md) | Có thể xảy ra N+1: truy cập thuộc tính bên trong vòng lặp for | warning | unsafe |
 | [DOL008](DOL008.md) | Dùng `flat=True` khi gọi `.values_list()` với một trường duy nhất | info | safe |
 

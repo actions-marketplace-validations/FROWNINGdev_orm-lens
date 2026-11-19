@@ -42,6 +42,37 @@ class MPTTModelDetectionTest(unittest.TestCase):
         self.assertEqual(len(models_), 1)
         self.assertEqual(models_[0].name, "Category")
         self.assertEqual([f.name for f in models_[0].fields], ["name"])
+        self.assertEqual(
+            {f.name for f in models_[0].all_fields()},
+            {"name", "lft", "rght", "tree_id", "level"},
+        )
+
+    def test_workspace_mpttmodel_name_does_not_inject_django_mptt_fields(self) -> None:
+        models_ = parse_models_file(
+            "catalog/models.py",
+            "from django.db import models\n\n"
+            "class MPTTModel(models.Model):\n"
+            "    class Meta:\n"
+            "        abstract = True\n\n"
+            "    name = models.CharField(max_length=50)\n\n"
+            "class Category(MPTTModel):\n"
+            "    label = models.CharField(max_length=50)\n",
+        )
+        self.assertEqual([f.name for f in models_[0].all_fields()], ["name", "label"])
+
+    def test_mpttmeta_can_rename_or_dynamically_select_tree_columns(self) -> None:
+        model = parse_models_file(
+            "catalog/models.py",
+            "from mptt.models import MPTTModel\n\n"
+            "class Category(MPTTModel):\n"
+            "    class MPTTMeta:\n"
+            "        tree_id_attr = 'custom_tree_id'\n"
+            "        level_attr = dynamic_name()\n",
+        )[0]
+        fields = {field.name: field for field in model.all_fields()}
+        self.assertEqual(set(fields), {"lft", "rght", "custom_tree_id"})
+        self.assertEqual(fields["custom_tree_id"].args, "editable=False, db_index=True")
+        self.assertNotIn("tree_id_attr", model.meta)
 
     def test_dotted_mptt_base_is_recognised(self) -> None:
         # `class Category(mptt.models.MPTTModel)` — detection keys off the
@@ -53,6 +84,42 @@ class MPTTModelDetectionTest(unittest.TestCase):
         )
         models_ = parse_models_file("catalog/models.py", src)
         self.assertEqual(len(models_), 1)
+
+    def test_abstract_mptt_base_uses_concrete_tree_field_names(self) -> None:
+        model = parse_models_file(
+            "catalog/models.py",
+            "from mptt.models import MPTTModel\n\n"
+            "class AbstractCategory(MPTTModel):\n"
+            "    class Meta:\n"
+            "        abstract = True\n"
+            "    class MPTTMeta:\n"
+            "        right_attr = 'parent_right'\n\n"
+            "class Category(AbstractCategory):\n"
+            "    class MPTTMeta:\n"
+            "        left_attr = 'child_left'\n",
+        )[0]
+        self.assertEqual(
+            {field.name for field in model.all_fields()},
+            {"child_left", "parent_right", "tree_id", "level"},
+        )
+
+    def test_aliased_mptt_import_resolves_to_django_mptt(self) -> None:
+        model = parse_models_file(
+            "catalog/models.py",
+            "from mptt.models import MPTTModel as Tree\n\n"
+            "class Category(Tree):\n"
+            "    pass\n",
+        )[0]
+        self.assertEqual({f.name for f in model.all_fields()}, {"lft", "rght", "tree_id", "level"})
+
+    def test_unrelated_external_mpttmodel_does_not_add_tree_fields(self) -> None:
+        model = parse_models_file(
+            "catalog/models.py",
+            "from another_package import MPTTModel\n\n"
+            "class Category(MPTTModel):\n"
+            "    pass\n",
+        )[0]
+        self.assertEqual(model.all_fields(), [])
 
 
 class TreeFieldRelationTest(unittest.TestCase):

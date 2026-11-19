@@ -141,6 +141,8 @@ class ParsedModel:
     removed_fields: list[str] = field(default_factory=list)
     """Names the class body sets to ``None``, which removes a field inherited
     from an abstract base (``username = None`` on an ``AbstractUser``)."""
+    mptt_field_names: dict[str, str | None] = field(default_factory=dict, repr=False, compare=False)
+    """Internal MPTTMeta names, with None for a dynamically set name."""
 
     def all_fields(self) -> list[ParsedField]:
         """Every field on this model's own table, parent-first.

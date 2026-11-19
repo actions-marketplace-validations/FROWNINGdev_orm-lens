@@ -84,6 +84,17 @@ class ExtractRelatedKwargOrderTest(unittest.TestCase):
     def test_empty_args_returns_none(self) -> None:
         self.assertIsNone(_extract_related(")"))
 
+    def test_nested_final_value_with_or_without_field_closing_paren(self) -> None:
+        args = (
+            "on_delete=models.CASCADE, related_name='files', "
+            "to=Document, verbose_name=_('Document')"
+        )
+        for suffix in ("", ")"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(_extract_related(args + suffix), "Document")
+                self.assertEqual(_extract_on_delete(args + suffix), "CASCADE")
+                self.assertEqual(_extract_related_name(args + suffix), "files")
+
 
 class ExtractOnDeleteKwargOrderTest(unittest.TestCase):
     def test_on_delete_after_to(self) -> None:
@@ -259,6 +270,25 @@ class Book(models.Model):
         self.assertEqual(author_field.related_model, "Author")
         self.assertEqual(author_field.on_delete, "CASCADE")
         self.assertEqual(author_field.related_name, "books")
+
+    def test_related_model_resolved_when_final_keyword_contains_call(self) -> None:
+        models = parse_models_file(
+            "documents/models.py",
+            "from django.db import models\n"
+            "from django.utils.translation import gettext_lazy as _\n"
+            "class Document(models.Model):\n"
+            "    title = models.CharField(max_length=100)\n"
+            "class DocumentFile(models.Model):\n"
+            "    document = models.ForeignKey(\n"
+            "        on_delete=models.CASCADE, related_name='files', to=Document,\n"
+            "        verbose_name=_('Document')\n"
+            "    )\n",
+        )
+        document_file = next(model for model in models if model.name == "DocumentFile")
+        relation = next(field for field in document_file.fields if field.name == "document")
+        self.assertEqual(relation.related_model, "Document")
+        self.assertEqual(relation.on_delete, "CASCADE")
+        self.assertEqual(relation.related_name, "files")
 
 
 # ---------------------------------------------------------------------------

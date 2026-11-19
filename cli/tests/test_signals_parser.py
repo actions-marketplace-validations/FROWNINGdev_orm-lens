@@ -220,11 +220,27 @@ class SignalConnectTest(unittest.TestCase):
         self.assertEqual(edges[0]["handler"], "cleanup")
         self.assertEqual(edges[0]["sender"], "orders.Order")
 
+    def test_connect_with_positional_sender(self) -> None:
+        edges = self._edges(
+            "from django.db.models.signals import post_save, pre_save\n"
+            "from orders.handlers import delete_file_from_storage\n"
+            "from orders.models import Order\n\n"
+            "def ready():\n"
+            "    pre_save.connect(delete_file_from_storage, Order)\n"
+            "    post_save.connect(delete_file_from_storage, 'Order')\n"
+        )
+        self.assertEqual(len(edges), 2)
+        self.assertEqual(edges[0]["sender"], "orders.Order")
+        self.assertNotIn("note", edges[0])
+        self.assertEqual(edges[1]["sender"], "orders.Order")
+        self.assertNotIn("note", edges[1])
+
     def test_unrelated_connect_calls_are_ignored(self) -> None:
         edges = self._edges(
             "import socket\n\n"
             "sock = socket.socket()\n"
             "sock.connect(address)\n"
+            "some_socket.connect(host, port)\n"
             "db.connect(dsn)\n"
         )
         self.assertEqual(edges, [])

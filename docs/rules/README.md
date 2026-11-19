@@ -29,7 +29,7 @@ Applicability follows Clippy's semantics. It is a property of each individual fi
 | [DOL003](DOL003.md) | Prefer `not .exists()` over `.first() is None` | queryset | info | safe |
 | [DOL004](DOL004.md) | Prefer `.exists()` over `.first() is not None` | queryset | info | safe |
 | [DOL005](DOL005.md) | Consider `Q(...)` over `.filter().exclude()` chain | queryset | hint | suggestion |
-| [DOL006](DOL006.md) | Drop `list()` around a QuerySet in for-loop | queryset | info | safe |
+| [DOL006](DOL006.md) | Drop `list()` around a QuerySet in for-loop | queryset | info | suggestion |
 | [DOL007](DOL007.md) | Possible N+1: attribute access inside for-loop | queryset | warning | unsafe |
 | [DOL008](DOL008.md) | Field name in a lookup looks misspelled | correctness | warning | suggestion |
 | [DOL011](DOL011.md) | `null=True` on CharField/TextField | model | warning | suggestion |

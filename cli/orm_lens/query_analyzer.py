@@ -808,6 +808,8 @@ _QS_SOURCE_METHODS = frozenset({
     "only", "defer", "using",
 })
 
+_PROJECTION_METHODS = frozenset({"values", "values_list"})
+
 # Documented QuerySet operations; manager factories and create/get-or-create/raw are excluded.
 _MANAGER_METHODS = frozenset({
     "aaggregate", "abulk_create", "abulk_update", "acontains", "acount", "adelete",
@@ -1045,56 +1047,159 @@ def _chain_source_method(chain: list[tuple[str, ast.Call]]) -> str | None:
     return chain[0][0]
 
 
+def _projects_rows(chain: list[tuple[str, ast.Call]]) -> bool:
+    return any(method in _PROJECTION_METHODS for method, _ in chain)
+
+
+def _assignment_values(
+    target: ast.expr, value: ast.expr | None,
+) -> Iterable[tuple[str, ast.expr | None]]:
+    """Pair assigned names with their values when unpacking is statically known."""
+    if isinstance(target, ast.Name):
+        yield target.id, value
+    elif isinstance(target, ast.Starred):
+        yield from _assignment_values(target.value, None)
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        if (
+            isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)
+            and not any(isinstance(item, ast.Starred) for item in (*target.elts, *value.elts))
+        ):
+            for item, item_value in zip(target.elts, value.elts):
+                yield from _assignment_values(item, item_value)
+        else:
+            for item in target.elts:
+                yield from _assignment_values(item, None)
+
+
 class _QuerySetTracker(ast.NodeVisitor):
     """Collects assignments of the form ``qs = <Model>.objects.<chain>``
     within a single AST. Later loops that iterate ``qs`` are cross-checked
     against the captured chain to see if it already has select/prefetch.
 
-    Only the most recent binding of each name is kept — a simple
-    approximation, but adequate for the common patterns this detector
-    targets (view functions where each qs variable is a fresh assignment).
+    Bindings follow source order and account for branches of an if statement.
+    Assignments inside nested scopes are tracked separately by the scanner.
     """
 
     def __init__(self) -> None:
         # name -> (chain, model_root_name_or_None)
         self.bindings: dict[str, tuple[list[tuple[str, ast.Call]], str | None]] = {}
+        self.model_assignments: dict[str, tuple[int, list[tuple[str, ast.Call]], str | None]] = {}
+
+    def chain_for(self, node: ast.AST) -> list[tuple[str, ast.Call]]:
+        chain = _collect_call_chain_methods(node)
+        receiver = node
+        if chain:
+            func = chain[0][1].func
+            assert isinstance(func, ast.Attribute)
+            receiver = func.value
+        while isinstance(receiver, ast.Subscript) and isinstance(receiver.slice, ast.Slice):
+            receiver = receiver.value
+        # Aliases and slices preserve model bindings. A projected receiver also
+        # stays projected through queryset chaining.
+        if isinstance(receiver, ast.Name):
+            binding = self.bindings.get(receiver.id)
+            if binding is not None and (not chain or _projects_rows(binding[0])):
+                return binding[0]
+        return chain
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        chain = _collect_call_chain_methods(node.value)
-        if chain:
-            model_root = _chain_model_root(chain)
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    self.bindings[target.id] = (chain, model_root)
-        self.generic_visit(node)
+        # Resolve each right-hand side before rebinding any target, e.g. a, b = b, a.
+        assignments = [
+            (name, self.chain_for(value) if value is not None else [])
+            for target in node.targets
+            for name, value in _assignment_values(target, node.value)
+        ]
+        for name, chain in assignments:
+            self._bind(name, chain, node.lineno)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if node.value is not None:
-            chain = _collect_call_chain_methods(node.value)
-            if chain and isinstance(node.target, ast.Name):
-                model_root = _chain_model_root(chain)
-                self.bindings[node.target.id] = (chain, model_root)
-        self.generic_visit(node)
+        if node.value is not None and isinstance(node.target, ast.Name):
+            self._bind(node.target.id, self.chain_for(node.value), node.lineno)
+
+    def _bind(self, name: str, chain: list[tuple[str, ast.Call]], lineno: int) -> None:
+        if chain:
+            model_root = _chain_model_root(chain)
+            self.bindings[name] = (chain, model_root)
+            if not _projects_rows(chain) and (
+                model_root is not None or _chain_source_method(chain) in _QS_SOURCE_METHODS
+            ):
+                self.model_assignments[name] = (lineno, chain, model_root)
+        else:
+            self.bindings.pop(name, None)
+
+    def visit_If(self, node: ast.If) -> None:
+        self.walk_if(node, self)
+
+    def walk_if(self, node: ast.If, visitor: ast.NodeVisitor) -> bool:
+        """Visit each branch and keep only the bindings that can reach the join."""
+        visitor.visit(node.test)
+        before = self.bindings
+        continuing = []
+        for branch in (node.body, node.orelse):
+            self.bindings = before.copy()
+            for stmt in branch:
+                if isinstance(stmt, ast.If):
+                    if not self.walk_if(stmt, visitor):
+                        break
+                else:
+                    visitor.visit(stmt)
+                    if isinstance(stmt, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+                        break
+            else:
+                continuing.append(self.bindings)
+        if not continuing:
+            self.bindings = before
+            return False
+        self.bindings = continuing[0]
+        if len(continuing) == 2:
+            left, right = continuing
+            self.bindings = {}
+            for name in left.keys() | right.keys():
+                first, second = left.get(name), right.get(name)
+                # Suppress the loop only when both continuing paths project.
+                if second is not None and _projects_rows(second[0]):
+                    binding = first
+                elif (
+                    (first is not None and _projects_rows(first[0]))
+                    or (second is not None and (second != before.get(name) or first is None))
+                ):
+                    binding = second
+                else:
+                    binding = first
+                if binding is not None:
+                    self.bindings[name] = binding
+        return True
+
+    # A prepass for global bindings and helper returns stays in its own scope.
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        pass
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        pass
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        pass
 
 
-def _iter_returns(node: ast.AST) -> Iterable[ast.Return]:
-    """Yield ``return`` statements belonging to *this* function only.
+class _LocalReturnTracker(_QuerySetTracker):
+    """Resolve return expressions against the bindings visible at each return."""
 
-    ``ast.walk`` would happily hand back a nested helper's returns and
-    attribute them to the outer function, which is exactly the sort of
-    quietly-wrong resolution this detector must not do.
-    """
-    stack = list(getattr(node, "body", []))
-    while stack:
-        cur = stack.pop()
-        if isinstance(
-            cur, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+    def __init__(self) -> None:
+        super().__init__()
+        self.results: list[tuple[list[tuple[str, ast.Call]], str | None]] = []
+
+    def visit_Return(self, node: ast.Return) -> None:
+        if node.value is None:
+            return
+        chain = self.chain_for(node.value)
+        model_root = _chain_model_root(chain)
+        if chain and (
+            isinstance(node.value, ast.Name)
+            or model_root is not None
+            or _chain_source_method(chain) in _QS_SOURCE_METHODS
         ):
-            continue
-        if isinstance(cur, ast.Return):
-            yield cur
-        for field_name in ("body", "orelse", "finalbody", "handlers"):
-            stack.extend(getattr(cur, field_name, []) or [])
+            self.results.append((chain, model_root))
 
 
 def _helper_call_name(node: ast.AST) -> tuple[str | None, bool]:
@@ -1139,7 +1244,7 @@ class _ReturnedQuerySetTracker(ast.NodeVisitor):
             print(post.author.name)    # <- still an N+1
 
     Resolution is by bare name and deliberately shallow: one hop, same
-    module, first return that yields a chain. ``self.get_queryset()`` matches
+    module, one representative return chain. ``self.get_queryset()`` matches
     a ``get_queryset`` defined anywhere in the file, which is right for the
     overwhelmingly common one-view-per-name case.
     """
@@ -1147,41 +1252,26 @@ class _ReturnedQuerySetTracker(ast.NodeVisitor):
     def __init__(self) -> None:
         # name -> (chain, model_root_name_or_None, formal_parameters)
         self.returns: dict[str, tuple[list[tuple[str, ast.Call]], str | None, ast.arguments]] = {}
+        self.model_assignments: dict[
+            ast.FunctionDef, dict[str, tuple[int, list[tuple[str, ast.Call]], str | None]]
+        ] = {}
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        if node.name not in self.returns:
-            resolved = self._resolve(node)
-            if resolved is not None:
-                self.returns[node.name] = (*resolved, node.args)
+        local = _LocalReturnTracker()
+        for stmt in node.body:
+            local.visit(stmt)
+        self.model_assignments[node] = local.model_assignments
+        if node.name not in self.returns and local.results:
+            # A projected return cannot rule out a model returned on another branch.
+            chain, model_root = next(
+                (result for result in reversed(local.results) if not _projects_rows(result[0])),
+                local.results[-1],
+            )
+            self.returns[node.name] = (chain, model_root, node.args)
         self.generic_visit(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.visit_FunctionDef(node)  # type: ignore[arg-type]
-
-    @staticmethod
-    def _resolve(
-        node: ast.FunctionDef,
-    ) -> tuple[list[tuple[str, ast.Call]], str | None] | None:
-        local = _QuerySetTracker()
-        for stmt in getattr(node, "body", []):
-            local.visit(stmt)
-        for ret in _iter_returns(node):
-            if ret.value is None:
-                continue
-            # `return Post.objects.filter(...)`
-            chain = _collect_call_chain_methods(ret.value)
-            model_root = _chain_model_root(chain)
-            if chain and (
-                model_root is not None
-                or _chain_source_method(chain) in _QS_SOURCE_METHODS
-            ):
-                return (chain, model_root)
-            # `qs = Post.objects.all(); ...; return qs`
-            if isinstance(ret.value, ast.Name):
-                binding = local.bindings.get(ret.value.id)
-                if binding is not None:
-                    return binding
-        return None
 
 
 class _RelationSchema(dict[str, dict[str, str]]):
@@ -1234,9 +1324,10 @@ class NPlusOneScanner(ast.NodeVisitor):
         )
         self._loops: list[tuple[ast.For | ast.AsyncFor, str | None, set[str]]] = []
         self.findings: list[NPlusOneFinding] = []
-        # QuerySet name bindings from the module scope. We refresh this at
-        # every function/class boundary for a mild scope-awareness.
         self._tracker = _QuerySetTracker()
+        self._module_tracker = _QuerySetTracker()
+        self._function_tracker: _QuerySetTracker | None = None
+        self._function_node: ast.FunctionDef | None = None
         # Module-wide map of helper name -> the QuerySet chain it returns, so
         # `for p in recent():` is analysable and not silently skipped.
         self._returns = _ReturnedQuerySetTracker()
@@ -1244,32 +1335,67 @@ class NPlusOneScanner(ast.NodeVisitor):
     # -- entry points ------------------------------------------------------
 
     def visit_Module(self, node: ast.Module) -> None:
-        self._tracker.visit(node)
+        self._module_tracker.visit(node)
         # Whole-module pass first: a loop may call a helper defined further
         # down the file, and textual order must not decide what we can see.
         self._returns.visit(node)
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        # Track bindings that appear inside this function BEFORE we start
-        # walking loops — otherwise a loop that precedes its ``qs = ...``
-        # binding textually would miss the chain (rare, but the analysis
-        # is cheap enough to do twice).
         local_tracker = _QuerySetTracker()
-        local_tracker.bindings = dict(self._tracker.bindings)
-        local_tracker.visit(node)
+        # A function can see globals defined below it. Its own assignments
+        # take effect as we walk the body, so a later projection cannot turn
+        # an earlier loop over model instances into a projected loop.
+        local_tracker.bindings = dict((self._function_tracker or self._module_tracker).bindings)
+        if self._function_node is not None:
+            # A closure reads the value at call time. If a captured projection
+            # can become a model queryset later, analyze that model binding.
+            assignments = self._returns.model_assignments.get(self._function_node, {})
+            for name, (lineno, chain, model_root) in assignments.items():
+                binding = local_tracker.bindings.get(name)
+                if lineno > node.lineno and binding is not None and _projects_rows(binding[0]):
+                    local_tracker.bindings[name] = (chain, model_root)
+        args = node.args
+        for parameter in (*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg):
+            if parameter is not None:
+                local_tracker.bindings.pop(parameter.arg, None)
         prev = self._tracker
+        prev_function = self._function_tracker
+        prev_node = self._function_node
         prev_loops = self._loops
-        self._tracker = local_tracker
+        self._tracker = self._function_tracker = local_tracker
+        self._function_node = node
         self._loops = []
         try:
             self.generic_visit(node)
         finally:
             self._tracker = prev
+            self._function_tracker = prev_function
+            self._function_node = prev_node
             self._loops = prev_loops
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.visit_FunctionDef(node)  # type: ignore[arg-type]
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        previous = self._tracker
+        self._tracker = _QuerySetTracker()
+        self._tracker.bindings = dict(previous.bindings)
+        try:
+            self.generic_visit(node)
+        finally:
+            self._tracker = previous
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self._tracker.visit_Assign(node)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._tracker.visit_AnnAssign(node)
+        self.generic_visit(node)
+
+    def visit_If(self, node: ast.If) -> None:
+        self._tracker.walk_if(node, self)
 
     def visit_For(self, node: ast.For) -> None:
         self._loops.append((node, None, set()))
@@ -1316,7 +1442,7 @@ class NPlusOneScanner(ast.NodeVisitor):
             chain, model_root = binding
             qs_var = iter_node.id
         elif isinstance(iter_node, ast.Call):
-            chain = _collect_call_chain_methods(iter_node)
+            chain = self._tracker.chain_for(iter_node)
             model_root = _chain_model_root(chain)
             if model_root is None:
                 # The chain does not root at a model, so it may be a call to a
@@ -1346,6 +1472,10 @@ class NPlusOneScanner(ast.NodeVisitor):
                     chain = helper_chain + (chain[1:] if in_chain else chain)
                     qs_var = f"{helper}()"
         else:
+            return
+
+        # dict.values() and projected QuerySets don't yield Django model instances.
+        if _projects_rows(chain):
             return
 
         source_method = _chain_source_method(chain)

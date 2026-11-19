@@ -364,11 +364,7 @@ const DOL005: Rule = {
   },
 };
 
-/**
- * DOL006 — `for x in list(qs):` forces the whole QuerySet into memory
- * before iteration begins. Iterating the QuerySet directly streams and
- * respects `.iterator()` chunk_size. Safe to auto-drop the `list()`.
- */
+/** DOL006 suggests skipping an extra list allocation when iterating a QuerySet. */
 const DOL006: Rule = {
   meta: {
     code: 'DOL006',
@@ -379,7 +375,7 @@ const DOL006: Rule = {
     since: '0.8.0',
     messages: {
       default:
-        'Wrapping a QuerySet in list() forces full evaluation. Iterate {qs} directly — QuerySets are already iterable.',
+        'If {qs} is a QuerySet, iterating it directly avoids an extra list allocation. Keep list() when you need a snapshot.',
     },
   },
   check(ctx: RuleContext): Finding[] {
@@ -390,6 +386,7 @@ const DOL006: Rule = {
       const m = RE_LIST_OF_QS_IN_FOR.exec(text);
       if (!m) continue;
       const inner = m[1];
+      if (!mayIterateQuerySet(inner)) continue;
       const start = text.indexOf(`list(${inner})`);
       if (start < 0) continue;
       out.push({
@@ -401,7 +398,7 @@ const DOL006: Rule = {
           startCol: start,
           endCol: start + `list(${inner})`.length,
         },
-        applicability: 'safe',
+        applicability: 'suggestion',
         fixHint: inner,
       });
     }

@@ -23,7 +23,12 @@ def _project(files: list[tuple[str, str]]) -> str:
     """Build a throwaway app whose migrations have the given dependencies."""
     tmp = TemporaryDirectory()
     _project._keep.append(tmp)  # type: ignore[attr-defined]
-    mig = Path(tmp.name) / "shop" / "migrations"
+    _write_migrations(Path(tmp.name) / "shop", files)
+    return tmp.name
+
+
+def _write_migrations(app: Path, files: list[tuple[str, str]]) -> None:
+    mig = app / "migrations"
     mig.mkdir(parents=True)
     (mig / "__init__.py").write_text("", encoding="utf-8")
     for name, deps in files:
@@ -41,7 +46,16 @@ def _project(files: list[tuple[str, str]]) -> str:
             + "\n",
             encoding="utf-8",
         )
-    return tmp.name
+
+
+def _write_app_config(app: Path, label: str) -> None:
+    app.joinpath("apps.py").write_text(
+        "from django.apps import AppConfig\n\n"
+        "class TestsConfig(AppConfig):\n"
+        f"    name = {app.name!r}\n"
+        f"    label = {label!r}\n",
+        encoding="utf-8",
+    )
 
 
 _project._keep = []  # type: ignore[attr-defined]
@@ -91,6 +105,86 @@ class MigrationConflictTests(unittest.TestCase):
             ]
         )
         self.assertEqual(_conflicts(root), [])
+
+    def test_same_directory_names_with_distinct_app_labels_do_not_conflict(self) -> None:
+        with TemporaryDirectory() as root:
+            for package, label in (
+                ("tests", "tests"),
+                ("lib/mixins/tests", "mixins_tests"),
+                ("lib/permissions/tests", "permissions_tests"),
+            ):
+                app = Path(root) / package
+                _write_migrations(
+                    app,
+                    [
+                        ("0001_initial.py", "[]"),
+                        (f"0002_{label}.py", f"[({label!r}, '0001_initial')]"),
+                    ],
+                )
+                _write_app_config(app, label)
+
+            self.assertEqual(_conflicts(root), [])
+
+    def test_copies_of_same_configured_app_still_share_a_graph(self) -> None:
+        with TemporaryDirectory() as root:
+            for package, branch in (("shop", "alice"), ("vendored_shop", "bob")):
+                app = Path(root) / package
+                _write_migrations(
+                    app,
+                    [
+                        ("0001_initial.py", "[]"),
+                        (f"0002_{branch}.py", "[('store', '0001_initial')]"),
+                    ],
+                )
+                _write_app_config(app, "store")
+
+            conflicts = _conflicts(root)
+            self.assertEqual({finding.app for finding in conflicts}, {"store"})
+            self.assertEqual({finding.migration for finding in conflicts}, {"0002_alice", "0002_bob"})
+
+    def test_uses_the_selected_subclass_of_a_local_app_config(self) -> None:
+        root = _project(
+            [
+                ("0001_initial.py", "[]"),
+                ("0002_update.py", "[('custom_shop', '0001_initial')]"),
+            ]
+        )
+        (Path(root) / "shop/apps.py").write_text(
+            "from django.apps import AppConfig\n\n"
+            "class BaseConfig(AppConfig):\n"
+            "    name = 'shop'\n"
+            "    label = 'base_shop'\n\n"
+            "class ShopConfig(BaseConfig):\n"
+            "    default = True\n"
+            "    label = 'custom_shop'\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(_conflicts(root), [])
+
+    def test_relabelled_app_checks_only_its_own_declared_models(self) -> None:
+        with TemporaryDirectory() as root:
+            for package, label in (("a/tests", "a_tests"), ("b/tests", "b_tests")):
+                app = Path(root) / package
+                _write_migrations(app, [("0001_initial.py", "[]")])
+                _write_app_config(app, label)
+                migration = app / "migrations" / "0001_initial.py"
+                migration.write_text(
+                    migration.read_text(encoding="utf-8").replace(
+                        "operations = []", 'operations = [migrations.DeleteModel(name="Item")]'
+                    ),
+                    encoding="utf-8",
+                )
+            (Path(root) / "a/tests/models.py").write_text(
+                "from django.db import models\n\n"
+                "class Item(models.Model):\n"
+                "    name = models.CharField(max_length=100)\n",
+                encoding="utf-8",
+            )
+
+            findings = analyze_migration_risks(root)
+            referenced = [f.app for f in findings if f.rule == "delete_model_still_referenced"]
+            self.assertEqual(referenced, ["a_tests"])
 
     def test_single_migration_is_clean(self) -> None:
         self.assertEqual(_conflicts(_project([("0001_initial.py", "[]")])), [])

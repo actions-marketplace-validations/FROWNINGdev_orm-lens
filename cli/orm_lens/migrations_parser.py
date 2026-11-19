@@ -638,7 +638,10 @@ def _resolve_app_label(deps_by_name: dict[str, list[list[str]]], app_label: str)
 
 
 def _replay_order(
-    parsed: list[tuple[Path, ast.Module]], *, app_label: str | None = None
+    parsed: list[tuple[Path, ast.Module]],
+    *,
+    app_label: str | None = None,
+    infer_label: bool = True,
 ) -> list[tuple[Path, ast.Module]]:
     """Order parsed migrations the way Django applies them.
 
@@ -652,6 +655,7 @@ def _replay_order(
     :param app_label: directory-derived label used to tell an in-app dependency
         from a cross-app one whose migration happens to share a local file's
         name. Without it every name that matches a local file is an edge.
+    :param infer_label: allow dependencies to override a directory-derived label.
     """
     by_stem = {path.stem: (path, tree) for path, tree in parsed}
     local = set(by_stem)
@@ -659,7 +663,9 @@ def _replay_order(
         stem: _migration_dependencies(_find_migration_class(tree))
         for stem, (_path, tree) in by_stem.items()
     }
-    label = _resolve_app_label(deps_by_name, app_label) if app_label is not None else None
+    label = app_label
+    if app_label is not None and infer_label:
+        label = _resolve_app_label(deps_by_name, app_label)
 
     deps: dict[str, list[str]] = {}
     for stem, pairs in deps_by_name.items():
@@ -729,7 +735,70 @@ def _find_all_migration_apps(project_root: str) -> list[tuple[str, Path]]:
     return out
 
 
-def _build_current_schema(project_root: str) -> dict[str, dict[str, set]]:
+def _configured_app_label(package: Path) -> str | None:
+    """Read a literal label from an unambiguous AppConfig in ``apps.py``."""
+    tree = _read_migration_tree(package / "apps.py")
+    if tree is None:
+        return None
+    app_config_names = {"AppConfig"}
+    for imp in tree.body:
+        if isinstance(imp, ast.ImportFrom) and imp.module in ("django.apps", "django.apps.config"):
+            app_config_names.update(
+                alias.asname or alias.name for alias in imp.names if alias.name == "AppConfig"
+            )
+    local_configs: dict[str, dict[str, Any]] = {}
+    configs: list[dict[str, Any]] = []
+    for cls in tree.body:
+        if not isinstance(cls, ast.ClassDef) or not cls.bases:
+            continue
+        # Prefer dependency inference when a class hierarchy cannot be read.
+        if len(cls.bases) != 1:
+            return None
+        base = cls.bases[0]
+        if isinstance(base, ast.Name):
+            base_name = base.id
+        elif isinstance(base, ast.Attribute):
+            base_name = base.attr
+        else:
+            return None
+        inherited = local_configs.get(base_name)
+        if inherited is None and base_name not in app_config_names and not base_name.endswith("AppConfig"):
+            return None
+
+        attrs = inherited.copy() if inherited is not None else {}
+        for stmt in cls.body:
+            if isinstance(stmt, ast.Assign):
+                attrs.update(
+                    (target.id, _literal_or_none(stmt.value))
+                    for target in stmt.targets
+                    if isinstance(target, ast.Name)
+                )
+            elif (
+                isinstance(stmt, ast.AnnAssign)
+                and isinstance(stmt.target, ast.Name)
+                and stmt.value is not None
+            ):
+                attrs[stmt.target.id] = _literal_or_none(stmt.value)
+        default = attrs.get("default", True)
+        if not isinstance(default, bool):
+            return None
+        local_configs[cls.name] = attrs
+        if default:
+            configs.append(attrs)
+    if len(configs) != 1:
+        configs = [attrs for attrs in configs if attrs.get("default") is True]
+    if len(configs) != 1:
+        return None
+    name = configs[0].get("name")
+    label = configs[0].get("label")
+    if not isinstance(name, str) or name.rsplit(".", 1)[-1] != package.name:
+        return None
+    return label if isinstance(label, str) and label.isidentifier() else None
+
+
+def _build_current_schema(
+    project_root: str, *, app_labels_by_package: dict[Path, str] | None = None
+) -> dict[str, dict[str, set]]:
     """Return ``{app_name: {model_name_lower: {field_names}}}`` from parser.
 
     Failures are swallowed — cross-reference rule is best-effort.
@@ -748,8 +817,14 @@ def _build_current_schema(project_root: str) -> dict[str, dict[str, set]]:
         # propagate — swallowing them hides bugs and abuse patterns.
         return schema
     for app in index.apps:
-        app_map = schema.setdefault(app.name, {})
         for model in app.models:
+            app_label = app.name
+            if app_labels_by_package:
+                for package in Path(model.file_path).parents:
+                    if package in app_labels_by_package:
+                        app_label = app_labels_by_package[package]
+                        break
+            app_map = schema.setdefault(app_label, {})
             # all_fields(), not fields: an abstract base's columns live on the
             # concrete child's table, so a migration that creates them is not
             # drift. Reported as #58 against django-guardian, where four such
@@ -1497,17 +1572,26 @@ def analyze_migration_risks(
         rules.
     :returns: sorted list of :class:`MigrationRisk`.
     """
-    if current_schema is None:
-        current_schema = _build_current_schema(project_root)
-
     findings: list[MigrationRisk] = []
     apps = _find_all_migration_apps(project_root)
 
     # Group by app so we know each migration's numeric index within its app.
     by_app: dict[str, list[tuple[Path, list[Path]]]] = {}
-    for app_label, mig_dir in apps:
+    configured_labels: set[str] = set()
+    app_labels_by_package: dict[Path, str] = {}
+    for directory_label, mig_dir in apps:
+        configured = _configured_app_label(mig_dir.parent)
+        app_label = configured or directory_label
+        if configured:
+            configured_labels.add(configured)
+        app_labels_by_package[mig_dir.parent.resolve()] = app_label
         files = _iter_migration_files(mig_dir)
         by_app.setdefault(app_label, []).append((mig_dir, files))
+
+    if current_schema is None:
+        current_schema = _build_current_schema(
+            project_root, app_labels_by_package=app_labels_by_package
+        )
 
     for app_label, dirs in by_app.items():
         # Flatten + dedupe by filename (mono-repos may vendor the same app).
@@ -1532,7 +1616,8 @@ def analyze_migration_risks(
             tree = _read_migration_tree(path)
             if tree is not None and _find_migration_class(tree) is not None:
                 trees.append((path, tree))
-        ordered = _replay_order(trees, app_label=app_label)
+        has_configured_label = app_label in configured_labels
+        ordered = _replay_order(trees, app_label=app_label, infer_label=not has_configured_label)
         ordered_files = [path for path, _tree in ordered]
         parsed = [m for m in (_describe_migration(p, t) for p, t in ordered) if m]
 
@@ -1565,22 +1650,18 @@ def analyze_migration_risks(
         # which is exactly what nobody has on a fresh clone or in a CI job that
         # has not booted Django yet.
         if len(parsed) > 1:
-            # `app_label` comes from the directory name, but Django lets an app
-            # declare `AppConfig.label` different from its package — and the
-            # dependency tuples use the *label*. Leafness computed against the
-            # wrong label sees no in-app edges at all and calls every migration
-            # a leaf, which would report a critical conflict for a perfectly
-            # linear history. `_resolve_app_label` recovers the real one from
-            # the dependencies that point at files in this directory, and stays
-            # silent when they are ambiguous: a false "your migrations
-            # conflict" is worse than a missed one.
+            # If the label comes from the directory name, try to recover the
+            # configured label from dependencies. Using the wrong label would
+            # treat in-app dependencies as foreign edges and produce extra leaves.
             #
             # Same reasoning when a migration computes its `dependencies`
             # (`dependencies = get_dependencies()`): we read them as `[]`, so
             # its parent looks like a leaf. We cannot tell the graph's shape,
             # so stay silent for the app.
-            effective_label = _resolve_app_label(
-                {m["name"]: m["dependencies"] for m in parsed}, app_label
+            effective_label = (
+                app_label
+                if has_configured_label
+                else _resolve_app_label({m["name"]: m["dependencies"] for m in parsed}, app_label)
             )
             deps_unknown = any(m.get("dependencies_unknown") for m in parsed)
             leaves = (

@@ -402,29 +402,25 @@ def _dotted_name(node: ast.AST) -> str | None:
 def _parse_call_args(args_block: str) -> tuple[list[ast.expr] | None, dict[str, ast.expr] | None]:
     """Parse a Django field's raw arg text via ``ast.parse``.
 
-    ``args_block`` is the content returned by :func:`_read_balanced_args` —
-    the substring between the opening ``(`` (already stripped) and the
-    balanced closing ``)`` (still trailing). Wraps as ``_(<content>)`` and
-    parses as an expression to extract positional args and keywords in a
-    kwarg-order-independent way.
+    ``args_block`` may include the field call's closing ``)``, as returned by
+    :func:`_read_balanced_args`, or have it removed by the caller. Wraps the
+    arguments as ``_(<content>)`` and parses them as an expression.
 
     Returns ``(posargs, kwargs)`` on success or ``(None, None)`` on
     :class:`SyntaxError`, so callers can fall back to the legacy regex path.
     """
     s = args_block.strip()
-    # _read_balanced_args returns content ending in exactly one balanced ")".
-    # Some call sites (e.g. line 331 `inner = args_block.rstrip(")")`) strip
-    # it. Normalise: drop up to two trailing ")" then re-close for parsing.
-    stripped_paren = False
-    while s.endswith(")") and not stripped_paren:
-        s = s[:-1].rstrip()
-        stripped_paren = True
-    if not s:
-        return [], {}
     try:
         tree = ast.parse(f"_({s})", mode="eval")
     except SyntaxError:
-        return None, None
+        # A final parenthesis can belong to a nested argument such as _('Name').
+        # Drop it only if the original argument list could not be parsed.
+        if not s.endswith(")"):
+            return None, None
+        try:
+            tree = ast.parse(f"_({s[:-1]})", mode="eval")
+        except SyntaxError:
+            return None, None
     call = tree.body
     if not isinstance(call, ast.Call):
         return None, None
@@ -813,8 +809,14 @@ def _collect_defs(
     file_path: str,
     content: str,
     non_model_names: set[str] | None = None,
+    field_aliases: dict[str, str] | None = None,
+    scope: str = "",
 ) -> list[ParsedModel]:
     """Pass 1 only: collect every class def (name, bases, fields, Meta).
+
+    *scope* (``"Outer."``) is the dotted path of the class body *content* was
+    cut from, so the abstract models nested in its classes come back named,
+    and their bases resolved, from the module down.
 
     No transitive resolution or abstract filtering — callers combine the
     result with definitions from other files before calling
@@ -840,7 +842,8 @@ def _collect_defs(
     lines = [line.expandtabs(4) for line in content.splitlines()]
     all_defs: list[ParsedModel] = []
     in_string = _lines_inside_strings(lines)
-    field_aliases = _field_import_aliases(lines, in_string)
+    if field_aliases is None:
+        field_aliases = _field_import_aliases(lines, in_string)
     app_name = _app_dir_for(file_path)[1] or "app"
 
     i = 0
@@ -886,7 +889,7 @@ def _collect_defs(
             NON_MODEL_TAIL.match(b.split(".")[-1]) for b in base_classes
         ):
             if non_model_names is not None:
-                non_model_names.add(model_name)
+                non_model_names.add(f"{scope}{model_name}")
             i += 1
             continue
 
@@ -985,7 +988,8 @@ def _collect_defs(
             )
             active_rx = rx if active_indent == indent else _build_body_regexes(active_indent)
 
-            if not cond_stack and rx["META_START_RE"].match(inner):
+            is_mptt_meta = line_indent == indent and bool(re.match(r"class\s+MPTTMeta\b", stripped))
+            if not cond_stack and (rx["META_START_RE"].match(inner) or is_mptt_meta):
                 k = j + 1
                 while k < len(lines):
                     if k in in_string:
@@ -997,7 +1001,17 @@ def _collect_defs(
                     m2 = rx["META_ITEM_RE"].match(ml)
                     if m2:
                         value, k = _read_meta_value(lines, k, m2.group(2))
-                        model.meta[m2.group(1)] = value
+                        key = m2.group(1)
+                        if not is_mptt_meta:
+                            model.meta[key] = value
+                        elif key in _MPTT_FIELD_DEFAULTS:
+                            try:
+                                field_name = ast.literal_eval(value)
+                            except (ValueError, SyntaxError):
+                                field_name = None
+                            model.mptt_field_names[key] = (
+                                field_name if isinstance(field_name, str) and field_name else None
+                            )
                     k += 1
                 j = k
                 continue
@@ -1091,9 +1105,106 @@ def _collect_defs(
             _pop_cond_chain(cond_stack, root_scope)
 
         all_defs.append(model)
+        all_defs.extend(
+            _nested_abstract_defs(
+                file_path,
+                lines,
+                in_string,
+                field_aliases,
+                class_header_end + 1,
+                j,
+                indent,
+                f"{scope}{model_name}",
+                non_model_names,
+            )
+        )
         i = j
 
     return all_defs
+
+
+_NESTED_CLASS_RE = re.compile(r"^\s*class\s+(?!Meta\b)([A-Za-z_]\w*)")
+
+
+def _nested_abstract_defs(
+    file_path: str,
+    lines: Sequence[str],
+    in_string: frozenset[int],
+    field_aliases: dict[str, str],
+    start: int,
+    end: int,
+    indent: int,
+    outer: str,
+    non_model_names: set[str] | None = None,
+) -> list[ParsedModel]:
+    """Abstract models declared in a class body, named ``Outer.Inner`` (#309).
+
+    ``class NonUnique(models.Model)`` inside ``NamedMixin`` is a normal abstract
+    model: Django copies its fields onto any class that names
+    ``NamedMixin.NonUnique`` as a base. The body loop skips nested classes, so
+    each one is parsed on its own, dedented, and kept only when abstract; a
+    nested ``TextChoices`` or concrete class adds nothing, and its dotted name
+    goes into *non_model_names* so a base naming it is not looked up by its
+    last part.
+    """
+    out: list[ParsedModel] = []
+    direct: list[ParsedModel] = []
+    # Every nested class binds its name in the body, abstract model or not.
+    bound: list[tuple[int, str]] = []
+    k = start
+    while k < end:
+        header = None if k in in_string else _NESTED_CLASS_RE.match(lines[k])
+        if not header or _line_indent_width(lines[k]) != indent:
+            k += 1
+            continue
+        bound.append((k, header.group(1)))
+        header_end = _find_block_header_end(lines, k)
+        stop = (header_end if header_end is not None else k) + 1
+        while stop < end and (
+            stop in in_string
+            or not lines[stop].strip()
+            or lines[stop].lstrip().startswith("#")
+            or _line_indent_width(lines[stop]) > indent
+        ):
+            stop += 1
+        block = "\n".join(
+            line[indent:] if not line[:indent].strip() else line.lstrip()
+            for line in lines[k:stop]
+        )
+        # The block is parsed alone, so it gets the file's field-import aliases.
+        for nested in _collect_defs(
+            file_path,
+            block,
+            non_model_names,
+            field_aliases=field_aliases,
+            scope=f"{outer}.",
+        ):
+            if not _is_abstract(nested):
+                continue
+            # A class nested deeper comes back named and resolved in its own body.
+            if "." not in nested.name:
+                nested.name = f"{outer}.{nested.name}"
+                direct.append(nested)
+            nested.line_number += k
+            for f in nested.fields:
+                f.line_number += k
+            out.append(nested)
+        k = stop
+    # A base naming a sibling defined above it (``class NonUnique(Common)``) is
+    # that sibling: the class body is the scope its bases are read in, and only
+    # names bound before the class statement are in it. A class body never sees
+    # the enclosing one, so this applies to the direct children only.
+    for d in direct:
+        above = {name for line, name in bound if line < d.line_number}
+        d.base_classes = [
+            f"{outer}.{b}" if b.split(".")[0] in above else b for b in d.base_classes
+        ]
+    if non_model_names is not None:
+        kept = {d.name for d in out}
+        non_model_names.update(
+            f"{outer}.{name}" for _, name in bound if f"{outer}.{name}" not in kept
+        )
+    return out
 
 
 def _read_meta_value(
@@ -1224,7 +1335,8 @@ def _has_model_ancestry(
     non_models = (known_non_models or {}).get(model.file_path, ())
     for base in model.base_classes:
         tail = base.split(".")[-1]
-        if tail in non_models:
+        # ``object`` is never a model; without this it read as an unknown external base.
+        if tail in non_models or base == "object":
             continue
         if re.search(r"models\.Model$", base) or _MODEL_ROOT_TAIL.match(tail):
             return True
@@ -1257,6 +1369,26 @@ def _django_field(name: str, type_: str, args: str, origin: str) -> ParsedField:
         name=name, type=type_, args=args, is_relation=False, line_number=0,
         inherited_from=origin,
     )
+
+
+_MPTT_FIELD_DEFAULTS = {
+    "left_attr": "lft",
+    "right_attr": "rght",
+    "tree_id_attr": "tree_id",
+    "level_attr": "level",
+}
+
+
+def _django_mptt_fields(field_names: dict[str, str | None]) -> list[ParsedField]:
+    """Tree columns injected by django-mptt on models with its abstract base."""
+    fields = []
+    for option, default in _MPTT_FIELD_DEFAULTS.items():
+        name = field_names.get(option, default)
+        if name is None:
+            continue
+        args = "editable=False, db_index=True" if option == "tree_id_attr" else "editable=False"
+        fields.append(_django_field(name, "PositiveIntegerField", args, "MPTTModel"))
+    return fields
 
 
 def _auth_m2m(name: str, target: str) -> ParsedField:
@@ -1309,6 +1441,7 @@ def _abstract_bases_fields(
     stack: tuple[tuple[str, str], ...] = (),
     resolver: _WorkspaceResolver | None = None,
     known_non_models: dict[str, set[str]] | None = None,
+    mptt_overrides: dict[str, str | None] | None = None,
 ) -> list[ParsedField]:
     """Fields ``model`` inherits from its abstract bases, parent-first.
 
@@ -1332,9 +1465,13 @@ def _abstract_bases_fields(
         model.name,
     )
     current_stack = stack if stack else (model_key,)
+    # django-mptt fills in options from bases after reading the child options.
+    mptt_names = model.mptt_field_names | (mptt_overrides or {})
+    model_path = Path(model.file_path)
     for base in model.base_classes:
+        is_mptt_base = False
         known, parent = (
-            resolver.lookup(Path(model.file_path), base)
+            resolver.lookup(model_path, base)
             if resolver is not None
             else (False, None)
         )
@@ -1345,13 +1482,21 @@ def _abstract_bases_fields(
             # fall back to the name-only pick only for third-party bases.
             if known:
                 continue
-            parent = _pick_base(by_name.get(target, []), model)
+            is_mptt_base = (
+                resolver is not None
+                and resolver.model_root(model_path, base) == ("mptt.models", "MPTTModel")
+            )
+            if not is_mptt_base:
+                parent = _pick_base(by_name.get(target, []), model)
         elif parent is model or (
             parent.name == model.name and parent.file_path == model.file_path
         ):
             parent = _pick_base(by_name.get(target, []), model)
         if parent is None:
-            contributed = [replace(f) for f in DJANGO_ABSTRACT_BASES.get(target, ())]
+            if is_mptt_base:
+                contributed = _django_mptt_fields(mptt_names)
+            else:
+                contributed = [replace(f) for f in DJANGO_ABSTRACT_BASES.get(target, ())]
         elif parent is model or not _is_abstract(parent):
             continue
         else:
@@ -1384,6 +1529,7 @@ def _abstract_bases_fields(
                         (*current_stack, parent_key),
                         resolver,
                         known_non_models,
+                        mptt_names,
                     )
                     if f.name not in hidden
                 ),
@@ -1617,7 +1763,7 @@ class _WorkspaceResolver:
         self._lookups: dict[
             tuple[Path, str], tuple[bool, ParsedModel | None]
         ] = {}
-        self._model_roots: dict[tuple[Path, str], bool] = {}
+        self._model_roots: dict[tuple[Path, str], tuple[str, str] | None] = {}
 
     def _resolved(self, path: Path) -> Path:
         """``path.resolve()`` once per path for the lifetime of the scan."""
@@ -1685,12 +1831,23 @@ class _WorkspaceResolver:
                 return False, None
             module, name = target[0], target[1]
         else:
+            # ``Outer.Inner``: a class nested in a class (#309), defined here or
+            # in the module ``Outer`` is imported from.
+            if base in defs:
+                return True, defs[base]
+            if base in non_models:
+                return True, None
             head = imports.get(qual[0])
             if head is None:
                 module = qual[0]
             elif head[1] is None:
                 module = head[0]
             else:
+                nested = ".".join((head[1], *qual[1:], name))
+                for candidate in _module_files(head[0], str(path), self.root):
+                    found = self._lookup(candidate, nested, hops + 1)
+                    if found[0]:
+                        return found
                 module = _join_module(head[0], head[1])
             for part in qual[1:]:
                 module = _join_module(module, part)
@@ -1727,23 +1884,23 @@ class _WorkspaceResolver:
             return self._lookup(path, base, hops)[1]
         return self.lookup(path, base)[1]
 
-    def _is_model_root(self, path: Path, base: str, hops: int = 0) -> bool:
+    def _model_root(self, path: Path, base: str, hops: int = 0) -> tuple[str, str] | None:
         if hops > _MAX_IMPORT_HOPS:
-            return False
+            return None
         entry = self.load(path)
         if entry is None:
-            return False
+            return None
         defs, imports = entry.defs, entry.imports
         *qual, name = base.split(".")
         if not qual:
             if name in defs or name in entry.non_models:
-                return False
+                return None
             target = imports.get(name)
             if target is None:
-                return False
+                return None
             module, target_name = target[0], target[1]
             if target_name is None:
-                return False
+                return None
         else:
             head = imports.get(qual[0])
             if head is None:
@@ -1757,28 +1914,30 @@ class _WorkspaceResolver:
             target_name = name
 
         if target_name == "Model" and _DJANGO_MODEL_MODULE.match(module):
-            return True
+            return module, target_name
         if _MODEL_ROOT_TAIL.match(target_name) and (
             _DJANGO_MODEL_MODULE.match(module)
             or module in ("model_utils.models", "polymorphic.models", "mptt.models")
         ):
-            return True
+            return module, target_name
 
         for candidate in _module_files(module, str(path), self.root):
-            if self._is_model_root(candidate, target_name, hops + 1):
-                return True
-        return False
+            root = self._model_root(candidate, target_name, hops + 1)
+            if root is not None:
+                return root
+        return None
+
+    def model_root(self, path: Path, base: str) -> tuple[str, str] | None:
+        """Resolve a Django model root to its import module and class name."""
+        path = self._resolved(path)
+        key = (path, base)
+        if key not in self._model_roots:
+            self._model_roots[key] = self._model_root(path, base)
+        return self._model_roots[key]
 
     def is_model_root(self, path: Path, base: str) -> bool:
         """Does ``base`` from ``path`` resolve to a Django model root?"""
-        path = self._resolved(path)
-        key = (path, base)
-        cached = self._model_roots.get(key)
-        if cached is not None:
-            return cached
-        result = self._is_model_root(path, base)
-        self._model_roots[key] = result
-        return result
+        return self.model_root(path, base) is not None
 
 
 def _pull_imported_bases(

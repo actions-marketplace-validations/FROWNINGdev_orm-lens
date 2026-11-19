@@ -171,9 +171,29 @@ test('DOL006 flags list() around a QuerySet inside for', () => {
     makeCtx('for u in list(User.objects.filter(active=True)):'),
   );
   assert.equal(findings.length, 1);
-  assert.equal(findings[0].applicability, 'safe');
+  assert.equal(findings[0].applicability, 'suggestion');
   assert.equal(findings[0].fixHint, 'User.objects.filter(active=True)');
   assert.deepEqual(findings[0].args, { qs: 'User.objects.filter(active=True)' });
+});
+
+test('DOL006 skips dictionary view snapshots', () => {
+  const rule = ruleByCode('DOL006');
+  const src = [
+    'for key in list(cache.keys()):',
+    '    del cache[key]',
+    'for item in list(cache.items()):',
+    '    del cache[item[0]]',
+  ].join('\n');
+  assert.deepEqual(rule.check(makeCtx(src)), []);
+});
+
+test('DOL006 does not mark a snapshot of an unknown iterable safe to remove', () => {
+  const rule = ruleByCode('DOL006');
+  for (const source of ['cache', 'self.children']) {
+    const findings = rule.check(makeCtx(`for value in list(${source}):`));
+    assert.equal(findings.length, 1);
+    assert.equal(findings[0].applicability, 'suggestion');
+  }
 });
 
 test('DOL007 flags FK attribute access inside a for-loop', () => {

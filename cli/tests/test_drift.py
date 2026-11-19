@@ -25,6 +25,7 @@ from orm_lens.drift import (
     format_drift,
     replay_app,
 )
+from tests.test_nested_abstract_bases import write_project
 
 HEADER = "from django.db import migrations, models\n\n\n"
 
@@ -87,6 +88,48 @@ class ReplayTest(unittest.TestCase):
         )
         state, _ = replay_app(self.migrations)
         self.assertEqual(state, {"post": {"headline"}})
+
+    def test_drift_replays_local_structural_operation_subclasses(self) -> None:
+        self._write(
+            "0001_initial.py",
+            '        migrations.CreateModel(name="Post", fields=[("title", None)]),\n',
+        )
+        (self.migrations / "0002_custom.py").write_text(
+            HEADER
+            + "class AddFieldWithDefault(migrations.AddField):\n"
+            + "    def database_forwards(self, *args):\n"
+            + "        pass\n\n"
+            + "class RemoveFieldOrSkip(migrations.RemoveField):\n"
+            + "    pass\n\n"
+            + "class RemoveTitle(RemoveFieldOrSkip):\n"
+            + "    pass\n\n"
+            + "class Unrelated:\n"
+            + "    pass\n\n"
+            + "class CustomState(migrations.AddField):\n"
+            + "    def state_forwards(self, app_label, state):\n"
+            + "        pass\n\n"
+            + "class AssignedState(migrations.AddField):\n"
+            + "    state_forwards = lambda self, app_label, state: None\n\n"
+            + "class InheritedAssignedState(AssignedState):\n"
+            + "    pass\n\n"
+            + "class AnnotatedState(migrations.AddField):\n"
+            + "    state_forwards: object = lambda self, app_label, state: None\n\n"
+            + "class Migration(migrations.Migration):\n"
+            + '    dependencies = [("blog", "0001_initial")]\n'
+            + "    operations = [\n"
+            + '        AddFieldWithDefault(model_name="post", name="slug", field=None),\n'
+            + '        RemoveTitle(model_name="post", name="title"),\n'
+            + '        Unrelated(model_name="post", name="ignored"),\n'
+            + '        CustomState(model_name="post", name="ignored", field=None),\n'
+            + '        InheritedAssignedState(model_name="post", name="assigned", field=None),\n'
+            + '        AnnotatedState(model_name="post", name="annotated", field=None),\n'
+            + "    ]\n",
+            encoding="utf-8",
+        )
+
+        report = detect_drift(self.root, declared={"blog": {"post": {"slug"}}})
+        self.assertEqual(report.migrations_replayed, 2)
+        self.assertEqual(report.drifted, [])
 
     def test_rename_model_carries_the_fields(self) -> None:
         self._write(
@@ -301,6 +344,37 @@ class ReplayTest(unittest.TestCase):
         self._write("0002_x.py", '        migrations.DeleteModel(name="Post"),\n')
         self.assertEqual(replay_app(self.migrations)[0], {})
 
+    # --- positional arguments (#303) --------------------------------------
+    # `makemigrations` writes keywords, but hand-written migrations pass the
+    # same values positionally. Django binds them by signature, so the replay
+    # has to as well or whole operations silently vanish and read as drift.
+
+    def test_positional_operation_arguments(self) -> None:
+        self._write(
+            "0001_initial.py",
+            "        migrations.CreateModel(\n"
+            '            "Post", [("id", None), ("title", None), ("legacy", None)],\n'
+            "        ),\n",
+        )
+        self._write(
+            "0002_x.py",
+            '        migrations.AddField("post", "slug", models.CharField(max_length=1)),\n'
+            '        migrations.RemoveField("post", "legacy"),\n'
+            '        migrations.RenameField("post", "title", "headline"),\n',
+        )
+        state, _ = replay_app(self.migrations)
+        self.assertEqual(state, {"post": {"slug", "headline"}})
+
+    def test_positional_delete_and_rename_model(self) -> None:
+        self._write(
+            "0001_initial.py",
+            '        migrations.CreateModel("Post", [("title", None)]),\n',
+        )
+        self._write("0002_x.py", '        migrations.RenameModel("Post", "Article"),\n')
+        self.assertEqual(replay_app(self.migrations)[0], {"article": {"title"}})
+        self._write("0003_x.py", '        migrations.DeleteModel("Article"),\n')
+        self.assertEqual(replay_app(self.migrations)[0], {})
+
     def test_alter_field_changes_nothing_structural(self) -> None:
         self._write(
             "0001_initial.py",
@@ -459,11 +533,57 @@ class DetectDriftTest(unittest.TestCase):
         )
         self.assertEqual(report.drifted, [])
 
+    def test_positional_delete_and_remove_field_report_no_drift(self) -> None:
+        # Issue #303: the models were moved to another app by hand-written
+        # migrations using positional arguments. A dropped DeleteModel leaves
+        # the stale model in the replayed state, and a dropped RemoveField
+        # leaves its field behind — two false "migrated but undeclared" rows.
+        move = self.root / "blog" / "migrations" / "0002_move.py"
+        move.write_text(
+            _migration(
+                "        migrations.SeparateDatabaseAndState(\n"
+                "            database_operations=[],\n"
+                "            state_operations=[\n"
+                '                migrations.DeleteModel("Network"),\n'
+                "            ],\n"
+                "        ),\n"
+                '        migrations.RemoveField("post", "title"),\n',
+                '[("blog", "0001_initial")]',
+            ),
+            encoding="utf-8",
+        )
+        report = self._detect({"blog": {"post": set()}})
+        self.assertEqual(report.drifted, [])
+
     def test_matching_schema_reports_no_drift(self) -> None:
         report = self._detect({"blog": {"post": {"id", "title"}}})
         self.assertEqual(report.drifted, [])
         self.assertEqual(report.blocking_count, 0)
         self.assertIn("no drift", format_drift(report))
+
+    def test_mptt_generated_tree_fields_do_not_report_drift(self) -> None:
+        blog = self.root / "blog"
+        (blog / "models.py").write_text(
+            "from django.db import models\n"
+            "from mptt.models import MPTTModel\n\n"
+            "class Post(MPTTModel):\n"
+            "    title = models.CharField(max_length=100)\n",
+            encoding="utf-8",
+        )
+        (blog / "migrations" / "0001_initial.py").write_text(
+            _migration(
+                '        migrations.CreateModel(name="Post", fields=[\n'
+                '            ("id", None), ("title", None),\n'
+                '            ("lft", models.PositiveIntegerField(editable=False)),\n'
+                '            ("rght", models.PositiveIntegerField(editable=False)),\n'
+                '            ("tree_id", models.PositiveIntegerField(editable=False, db_index=True)),\n'
+                '            ("level", models.PositiveIntegerField(editable=False)),\n'
+                "        ]),\n"
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(detect_drift(self.root).drifted, [])
 
     def test_directly_imported_array_field_matches_migration(self) -> None:
         blog = self.root / "blog"
@@ -644,6 +764,44 @@ class SameAppNameTwiceTest(unittest.TestCase):
             self.assertEqual(
                 payload["drifted"][0]["missingInMigrations"], ["never_migrated"]
             )
+
+
+class NestedAbstractBaseDriftTest(unittest.TestCase):
+    """#309: a field from ``NamedMixin.NonUnique`` is declared, not drift."""
+
+    def test_nested_abstract_base_gives_no_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_project(root)
+            for app, models_ in {
+                "assets": [
+                    ("AssetHolder", "models.CharField(max_length=75, db_index=True)"),
+                    ("Manufacturer", "models.CharField(max_length=255, unique=True)"),
+                ],
+                "places": [("Spot", "models.CharField(max_length=20)")],
+            }.items():
+                field = "label" if app == "places" else "name"
+                extra = (
+                    '            ("code", models.CharField(max_length=4)),\n'
+                    if app == "places"
+                    else ""
+                )
+                (root / app / "migrations").mkdir()
+                (root / app / "migrations" / "__init__.py").write_text("", encoding="utf-8")
+                body = "".join(
+                    f'        migrations.CreateModel(name="{model}", fields=[\n'
+                    '            ("id", models.AutoField(primary_key=True)),\n'
+                    f'            ("{field}", {declared}),\n'
+                    f"{extra}"
+                    "        ]),\n"
+                    for model, declared in models_
+                )
+                (root / app / "migrations" / "0001_initial.py").write_text(
+                    _migration(body), encoding="utf-8"
+                )
+
+            payload = detect_drift(str(root)).to_dict()
+            self.assertEqual(payload["drifted"], [])
 
 
 class BlockingPolicyTest(unittest.TestCase):

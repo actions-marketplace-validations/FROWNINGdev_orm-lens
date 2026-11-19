@@ -151,19 +151,23 @@ def _signal_arg_names(call: ast.Call) -> list[str]:
     return [name for name in names if name is not None]
 
 
+def _sender_node(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return _name_of(node)
+
+
 def _sender_kwarg(call: ast.Call) -> str | None:
     for kw in call.keywords:
         if kw.arg == "sender":
-            if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
-                return kw.value.value
-            return _name_of(kw.value)
+            return _sender_node(kw.value)
     return None
 
 
 def _connect_call(
     call: ast.Call, known_signals: set[str]
 ) -> tuple[str, str, str | None] | None:
-    """Read ``<signal>.connect(<handler>[, sender=X])`` as
+    """Read ``<signal>.connect(<handler>[, <sender> | sender=X])`` as
     (signal, handler, raw sender), or None if ``call`` is not one.
 
     ``.connect`` is a common method name (sockets, database clients), so the
@@ -183,14 +187,17 @@ def _connect_call(
     handler = _name_of(handler_node) if handler_node is not None else None
     if not handler:
         return None
-    sender_raw = _sender_kwarg(call)
+    sender_kw = _sender_kwarg(call)
     tail = signal_name.rsplit(".", 1)[-1]
     if (
         tail not in _BUILTIN_SIGNALS
         and tail not in known_signals
-        and sender_raw is None
+        and sender_kw is None
     ):
         return None
+    sender_raw = sender_kw
+    if sender_raw is None and len(call.args) >= 2:
+        sender_raw = _sender_node(call.args[1])
     return signal_name, handler, sender_raw
 
 
