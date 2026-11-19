@@ -115,6 +115,31 @@ test('DOL001 and DOL002 still flag a count after =, not, and, (, comma, augmente
   }
 });
 
+// The mirror image of the left-side check: the matched comparison continues
+// into a larger expression on its right. `> 0.5` is a fraction (the pattern's
+// \b lets `0` match the head of `0.5`), `> 0 + offset` compares the count
+// against `0 + offset`, and `== 0 == other` is a chained comparison —
+// rewriting only the matched part would break the code or change its
+// meaning (`qs.exists().5` is a SyntaxError).
+test('DOL001-DOL004 skip a match that continues into an expression on its right', () => {
+  for (const [code, line] of [
+    ['DOL001', 'if qs.count() > 0.5:'],
+    ['DOL001', 'if qs.count() > 0 + offset:'],
+    ['DOL002', 'if qs.count() == 0 == other:'],
+    ['DOL001', 'if qs.count() >= 1.5:'],
+    ['DOL003', 'if qs.first() is None == other:'],
+    ['DOL004', 'if qs.first() is not None == other:'],
+  ]) {
+    assert.equal(ruleByCode(code).check(makeCtx(line)).length, 0, line);
+  }
+});
+
+test('DOL001 still flags a count comparison that ends the expression', () => {
+  for (const line of ['if qs.count() > 0:', 'return qs.count() > 0']) {
+    assert.equal(ruleByCode('DOL001').check(makeCtx(line)).length, 1, line);
+  }
+});
+
 test('DOL003 flags qs.first() is None', () => {
   const rule = ruleByCode('DOL003');
   const findings = rule.check(

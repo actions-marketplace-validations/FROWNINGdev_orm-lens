@@ -149,6 +149,24 @@ function isOperand(line: string, col: number): boolean {
   return /(?:[=!<>]=|[-+*/%@&|^~<>])$/.test(before);
 }
 
+/**
+ * True when the match ending at `end` continues into a larger expression on
+ * its right, so the comparison the rule matched is not the whole condition:
+ * a fraction (`.5` — the pattern's `\b` lets `0` match the head of `0.5`),
+ * an arithmetic or bitwise operator (`> 0 + offset` compares the count
+ * against `0 + offset`, not against 0), or another comparison operator
+ * (`== 0 == other` is a chained comparison, and `is`/`in` chain too).
+ * Rewriting only the matched part would then break the code or change its
+ * meaning: `qs.exists().5` is a SyntaxError.
+ */
+function isOperandRight(line: string, end: number): boolean {
+  const after = line.slice(end).trimStart();
+  if (/^\.\d/.test(after)) return true;
+  if (/^(?:==|!=|<=|>=|<<|>>|\*\*)/.test(after)) return true;
+  if (/^[-+*/%@&|^~<>]/.test(after)) return true;
+  return /^(?:is|in)\b/.test(after);
+}
+
 function mayIterateQuerySet(expr: string): boolean {
   const callAt = expr.indexOf('(');
   if (callAt === -1) return true;
@@ -183,6 +201,7 @@ const DOL001: Rule = {
       let m: RegExpExecArray | null;
       while ((m = RE_COUNT_GT_ZERO.exec(text)) !== null) {
         if (isOperand(text, m.index)) continue;
+        if (isOperandRight(text, m.index + m[0].length)) continue;
         out.push({
           code: 'DOL001',
           messageId: 'default',
@@ -219,6 +238,7 @@ const DOL002: Rule = {
       let m: RegExpExecArray | null;
       while ((m = RE_COUNT_EQ_ZERO.exec(text)) !== null) {
         if (isOperand(text, m.index)) continue;
+        if (isOperandRight(text, m.index + m[0].length)) continue;
         out.push({
           code: 'DOL002',
           messageId: 'default',
@@ -255,6 +275,7 @@ const DOL003: Rule = {
       let m: RegExpExecArray | null;
       while ((m = RE_FIRST_IS_NONE.exec(text)) !== null) {
         if (isOperand(text, m.index)) continue;
+        if (isOperandRight(text, m.index + m[0].length)) continue;
         out.push({
           code: 'DOL003',
           messageId: 'default',
@@ -291,6 +312,7 @@ const DOL004: Rule = {
       let m: RegExpExecArray | null;
       while ((m = RE_FIRST_IS_NOT_NONE.exec(text)) !== null) {
         if (isOperand(text, m.index)) continue;
+        if (isOperandRight(text, m.index + m[0].length)) continue;
         out.push({
           code: 'DOL004',
           messageId: 'default',
