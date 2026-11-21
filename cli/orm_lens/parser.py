@@ -1071,6 +1071,7 @@ def _collect_defs(
                     args=inner.strip(),
                     is_relation=is_rel,
                     line_number=j,
+                    declaration_file=file_path,
                 )
                 if is_rel:
                     parsed_field.relation_kind = relation_kind  # type: ignore[assignment]
@@ -1244,6 +1245,33 @@ def _read_meta_value(
 
 def _is_abstract(model: ParsedModel) -> bool:
     return model.meta.get("abstract", "").strip() in ("True", "1", "true")
+
+
+def _configured_app_labels(models: Sequence[ParsedModel]) -> dict[Path, str | None]:
+    """Read literal AppConfig labels once for the app directories in *models*."""
+    from .migrations_parser import _configured_app_label
+
+    labels: dict[Path, str | None] = {}
+    for model in models:
+        app_dir, _ = _app_dir_for(model.file_path)
+        path = Path(app_dir).resolve()
+        if path not in labels:
+            labels[path] = _configured_app_label(path)
+    return labels
+
+
+def _effective_app_label(
+    model: ParsedModel, configured_labels: dict[Path, str | None]
+) -> str:
+    raw = model.meta.get("app_label", "").strip()
+    try:
+        label = ast.literal_eval(raw)
+    except (ValueError, SyntaxError):
+        label = None
+    if isinstance(label, str) and label:
+        return label
+    app_dir, _ = _app_dir_for(model.file_path)
+    return configured_labels.get(Path(app_dir).resolve()) or model.app_name
 
 
 def _pick_base(
@@ -2039,6 +2067,92 @@ def iter_workspace_py_files(
                 yield Path(dirpath) / name
 
 
+def _attach_implicit_parent_links(
+    models: list[ParsedModel], resolver: _WorkspaceResolver
+) -> None:
+    """Find the columns Django adds for direct, resolved concrete parents."""
+    configured_labels = _configured_app_labels(models)
+
+    def model_key(model: ParsedModel) -> tuple[Path, str]:
+        return resolver._resolved(Path(model.file_path)), model.name
+
+    concrete: dict[tuple[Path, str], ParsedModel] = {}
+    proxies: dict[tuple[Path, str], ParsedModel] = {}
+    for model in models:
+        if model.meta.get("proxy", "").strip() in ("True", "1", "true"):
+            proxies[model_key(model)] = model
+        else:
+            concrete[model_key(model)] = model
+
+    def concrete_key(parent: ParsedModel) -> tuple[Path, str] | None:
+        pending = [model_key(parent)]
+        visited: set[tuple[Path, str]] = set()
+        resolved: set[tuple[Path, str]] = set()
+        while pending:
+            key = pending.pop()
+            if key in visited:
+                continue
+            visited.add(key)
+            if key in concrete:
+                resolved.add(key)
+            elif key in proxies:
+                proxy = proxies[key]
+                for base in proxy.base_classes:
+                    ancestor = resolver.resolve(Path(proxy.file_path), base)
+                    if ancestor is not None:
+                        pending.append(model_key(ancestor))
+        return next(iter(resolved)) if len(resolved) == 1 else None
+
+    for model in concrete.values():
+        path = Path(model.file_path)
+        parents = {}
+        for base in model.base_classes:
+            parent = resolver.resolve(path, base)
+            if parent is None:
+                continue
+            key = concrete_key(parent)
+            if key is not None and concrete[key] is not model:
+                parents[key] = concrete[key]
+        if not parents:
+            continue
+
+        for model_field in model.all_fields():
+            if model_field.relation_kind != "OneToOneField":
+                continue
+            try:
+                call = ast.parse(f"_({model_field.args})", mode="eval").body
+            except SyntaxError:
+                continue
+            if not isinstance(call, ast.Call):
+                continue
+            kwargs = {kw.arg: kw.value for kw in call.keywords}
+            flag = kwargs.get("parent_link")
+            if not isinstance(flag, ast.Constant) or flag.value is not True:
+                continue
+            target = kwargs.get("to", call.args[0] if call.args else None)
+            if isinstance(target, ast.Constant) and isinstance(target.value, str):
+                app, _, name = target.value.rpartition(".")
+                parents = {
+                    key: parent
+                    for key, parent in parents.items()
+                    if (
+                        _effective_app_label(parent, configured_labels).lower(),
+                        parent.name.lower(),
+                    ) != (
+                        (app or _effective_app_label(model, configured_labels)).lower(),
+                        name.lower(),
+                    )
+                }
+            elif target is not None:
+                target_name = _dotted_name(target)
+                declaration_path = Path(model_field.declaration_file or model.file_path)
+                related = resolver.resolve(declaration_path, target_name) if target_name else None
+                if related is not None:
+                    parents.pop(model_key(related), None)
+
+        model.implicit_parent_links = {f"{parent.name.lower()}_ptr" for parent in parents.values()}
+
+
 def scan_workspace(
     root: str,
     exclude_globs: Sequence[str] = DEFAULT_EXCLUDES,
@@ -2084,6 +2198,7 @@ def scan_workspace(
     )
 
     found = _resolve_and_filter(all_defs, resolver)
+    _attach_implicit_parent_links(found, resolver)
     # Finding SQLAlchemy models means reading every file, which a big Django
     # project should not pay for: look only when there are no Django models
     # or the project declares SQLAlchemy.

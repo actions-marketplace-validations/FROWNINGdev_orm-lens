@@ -407,7 +407,7 @@ orm-lens mcp
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/FROWNINGdev/orm-lens
-    rev: py-v1.18.1
+    rev: py-v1.18.2
     hooks:
       - id: orm-lens-nplusone
       - id: orm-lens-migration-risk

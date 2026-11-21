@@ -885,6 +885,273 @@ class RealWorldPrecisionTest(unittest.TestCase):
         )
         self.assertNotIn("add_field_not_null_no_default", rules)
 
+    def test_second_initial_migration_only_runs_on_a_fresh_database(self) -> None:
+        # makemigrations splits cross-app FKs into a second migration that is
+        # also marked initial = True. Like a squashed migration it only ever
+        # runs on a fresh database (or is faked with --fake-initial), so a NOT
+        # NULL FK there must not be flagged as hitting populated rows.
+        rules = self._rules(
+            self._add("models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='orders.order')"),
+            extra="    initial = True\n",
+        )
+        self.assertNotIn("add_field_not_null_no_default", rules)
+        # Without the flag the same field on a later migration still flags.
+        self.assertIn(
+            "add_field_not_null_no_default",
+            self._rules(self._add("models.CharField(max_length=50)")),
+        )
+
+    def test_initial_migration_with_data_op_is_not_exempt(self) -> None:
+        # A second initial = True migration that runs a data operation first
+        # can populate the table before a NOT NULL column arrives. The fresh-
+        # database exemption must not hide that real IntegrityError risk.
+        add = self._add("models.CharField(max_length=50)")
+        flagged = self._rules(
+            "        migrations.RunPython(seed, migrations.RunPython.noop),\n" + add,
+            extra="    initial = True\n",
+        )
+        self.assertIn("add_field_not_null_no_default", flagged)
+        self.assertEqual(flagged["add_field_not_null_no_default"][0].severity, "warning")
+        # With no preceding data operation the initial migration stays exempt.
+        self.assertNotIn(
+            "add_field_not_null_no_default",
+            self._rules(add, extra="    initial = True\n"),
+        )
+
+    def test_created_model_not_exempt_after_data_op(self) -> None:
+        # makemigrations can create a model and split its NOT NULL field into
+        # an AddField in the same migration; a just-created model is still
+        # empty. Once a data operation inserts rows, that creation-based
+        # exemption must no longer hide a later NOT NULL AddField.
+        create = "        migrations.CreateModel(name='Line', fields=[]),\n"
+        run = "        migrations.RunPython(seed, migrations.RunPython.noop),\n"
+        line_add = (
+            "        migrations.AddField(model_name='line', name='x', "
+            "field=models.CharField(max_length=50)),\n"
+        )
+        self.assertIn("add_field_not_null_no_default", self._rules(create + run + line_add))
+        # With no intervening data operation a just-created model stays exempt.
+        self.assertNotIn(
+            "add_field_not_null_no_default",
+            self._rules(create + line_add),
+        )
+
+    def test_select_for_update_is_not_a_row_change(self) -> None:
+        # A locking SELECT mentions UPDATE but changes no rows; matching the
+        # keyword anywhere in the SQL would wrongly soften a critical NOT NULL
+        # finding. Classify each statement by its leading verb instead.
+        add = self._add("models.CharField(max_length=50)")
+        lock = self._rules(
+            "        migrations.RunSQL(\n"
+            "            [('SELECT id FROM orders_order FOR UPDATE', None)],\n"
+            "            migrations.RunSQL.noop),\n" + add,
+        )
+        self.assertEqual(lock["add_field_not_null_no_default"][0].severity, "critical")
+        # A CTE-led statement that ends in a row change is still detected.
+        cte = self._rules(
+            "        migrations.RunSQL(\n"
+            "            [('WITH t AS (SELECT id FROM orders_order) "
+            "UPDATE orders_order SET x = 1', [None])],\n"
+            "            migrations.RunSQL.noop),\n" + add,
+        )
+        self.assertEqual(cte["add_field_not_null_no_default"][0].severity, "warning")
+
+    def test_comment_marker_inside_literal_is_not_a_comment(self) -> None:
+        # PostgreSQL allows any character inside a string literal, so '--'
+        # there is data, not a comment. Stripping comments quote-unaware
+        # eats the rest of the line and hides a real INSERT that follows,
+        # wrongly keeping the critical severity for the NOT NULL AddField.
+        add = self._add("models.CharField(max_length=50)")
+        trap = self._rules(
+            "        migrations.RunSQL(\n"
+            "            [(\"SELECT '--'; INSERT INTO orders_order (id) VALUES (1)\", [None])],\n"
+            "            migrations.RunSQL.noop),\n" + add,
+        )
+        self.assertEqual(trap["add_field_not_null_no_default"][0].severity, "warning")
+        # The same literal without a row change stays a plain SELECT: the
+        # quote-aware pass must not turn the marker into a false positive.
+        plain = self._rules(
+            "        migrations.RunSQL(\n"
+            "            [(\"SELECT '--' FROM orders_order\", None)],\n"
+            "            migrations.RunSQL.noop),\n" + add,
+        )
+        self.assertEqual(plain["add_field_not_null_no_default"][0].severity, "critical")
+
+    def test_modifying_cte_body_counts_as_data_op(self) -> None:
+        # PostgreSQL runs a data-modifying CTE even when the trailing
+        # statement is a plain SELECT, so the INSERT inside the CTE body
+        # must be classified, not just the tail after the closing paren.
+        add = self._add("models.CharField(max_length=50)")
+        seeded = self._rules(
+            "        migrations.RunSQL(\n"
+            "            [('WITH seeded AS (INSERT INTO orders_order (id) VALUES (1) "
+            "RETURNING id) SELECT id FROM seeded', [None])],\n"
+            "            migrations.RunSQL.noop),\n" + add,
+        )
+        self.assertEqual(seeded["add_field_not_null_no_default"][0].severity, "warning")
+        # A SELECT-only CTE is still a non-modifying statement.
+        reads = self._rules(
+            "        migrations.RunSQL(\n"
+            "            [('WITH totals AS (SELECT count(*) FROM orders_order) "
+            "SELECT count(*) FROM totals', None)],\n"
+            "            migrations.RunSQL.noop),\n" + add,
+        )
+        self.assertEqual(reads["add_field_not_null_no_default"][0].severity, "critical")
+
+    def test_data_op_before_creation_keeps_model_exempt(self) -> None:
+        # A data operation that runs before the model is created cannot have
+        # populated its table, so it must not reject the creation-based
+        # exemption; only one that runs after CreateModel can.
+        run = (
+            "        migrations.RunSQL(\n"
+            "            [('UPDATE orders_order SET x = 1', [None])],\n"
+            "            migrations.RunSQL.noop),\n"
+        )
+        create = "        migrations.CreateModel(name='Line', fields=[]),\n"
+        line_add = (
+            "        migrations.AddField(model_name='line', name='x', "
+            "field=models.CharField(max_length=50)),\n"
+        )
+        self.assertNotIn(
+            "add_field_not_null_no_default",
+            self._rules(run + create + line_add),
+        )
+        # An operation after creation still rejects the exemption.
+        self.assertIn(
+            "add_field_not_null_no_default",
+            self._rules(create + run + line_add),
+        )
+
+    def test_run_sql_insert_counts_as_data_op_in_initial_migration(self) -> None:
+        # An INSERT in an initial migration populates the table just as a
+        # RunPython does, so a later NOT NULL field without a default is a real
+        # risk and must not be suppressed by the fresh-database exemption.
+        add = self._add("models.CharField(max_length=50)")
+        insert = (
+            "        migrations.RunSQL("
+            "'INSERT INTO orders_order (id) VALUES (1)', "
+            "migrations.RunSQL.noop),\n"
+        )
+        self.assertIn("add_field_not_null_no_default", self._rules(insert + add, extra="    initial = True\n"))
+        # With no preceding data operation the initial migration stays exempt.
+        self.assertNotIn(
+            "add_field_not_null_no_default",
+            self._rules(add, extra="    initial = True\n"),
+        )
+
+    def test_initial_migration_after_seeded_first_is_not_exempt(self) -> None:
+        # 0001 seeds rows with a data operation; 0002 is marked initial = True.
+        # Django still executes the second migration against the seeded table
+        # (initial only matters to --fake-initial), so the fresh-database
+        # exemption must not hide a NOT NULL AddField there. The finding is
+        # softened, not dropped: the earlier operation may also have emptied
+        # the table.
+        seeded = (
+            "from django.db import migrations\n"
+            "def seed(apps, schema_editor):\n"
+            "    pass\n"
+            "class Migration(migrations.Migration):\n"
+            "    dependencies = []\n"
+            "    operations = [\n"
+            "        migrations.RunPython(seed, migrations.RunPython.noop),\n"
+            "    ]\n"
+        )
+        add = self._add("models.CharField(max_length=50)")
+        for first, expected in ((seeded, True), (_INITIAL, False)):
+            with TemporaryDirectory() as tmp:
+                app = Path(tmp) / "orders"
+                _write(app, "0001_initial", first)
+                _write(app, "0002_change", _second(add, extra="    initial = True\n"))
+                findings = analyze_migration_risks(
+                    tmp, current_schema=_empty_schema()
+                )
+            rules = _by_rule(findings)
+            if expected:
+                self.assertIn("add_field_not_null_no_default", rules)
+                self.assertEqual(
+                    rules["add_field_not_null_no_default"][0].severity, "warning"
+                )
+            else:
+                self.assertNotIn("add_field_not_null_no_default", rules)
+
+    def test_ordinary_migration_after_seeded_first_keeps_critical(self) -> None:
+        # A data operation in 0001 does not make the table empty when a later
+        # ordinary (non-initial) migration runs: seeded rows persist until
+        # something deletes them, so the NOT NULL finding keeps critical
+        # severity there. Only a second ``initial = True`` migration — the
+        # fresh-database context — earns the historical soften.
+        seeded = (
+            "from django.db import migrations\n"
+            "def seed(apps, schema_editor):\n"
+            "    pass\n"
+            "class Migration(migrations.Migration):\n"
+            "    dependencies = []\n"
+            "    operations = [\n"
+            "        migrations.RunPython(seed, migrations.RunPython.noop),\n"
+            "    ]\n"
+        )
+        add = self._add("models.CharField(max_length=50)")
+        with TemporaryDirectory() as tmp:
+            app = Path(tmp) / "orders"
+            _write(app, "0001_initial", seeded)
+            _write(app, "0002_change", _second(add))
+            findings = analyze_migration_risks(
+                tmp, current_schema=_empty_schema()
+            )
+        rules = _by_rule(findings)
+        self.assertIn("add_field_not_null_no_default", rules)
+        self.assertEqual(rules["add_field_not_null_no_default"][0].severity, "critical")
+
+    def test_run_sql_query_param_pair_counts_as_data_op(self) -> None:
+        # Django's RunSQL also accepts query/parameter pairs, e.g.
+        # [("UPDATE ...", [None])]. The pair must be unwrapped before the
+        # row-changing check, both within a file and across the app replay —
+        # otherwise an INSERT/UPDATE expressed as a pair silently keeps the
+        # fresh-database exemption alive.
+        add = self._add("models.CharField(max_length=50)")
+        pair = (
+            "        migrations.RunSQL(\n"
+            "            [('UPDATE orders_order SET x = 1', [None])],\n"
+            "            migrations.RunSQL.noop),\n"
+        )
+        softened = self._rules(pair + add, extra="    initial = True\n")
+        self.assertIn("add_field_not_null_no_default", softened)
+        self.assertEqual(
+            softened["add_field_not_null_no_default"][0].severity, "warning"
+        )
+        # A read-only pair is not a data operation: the exemption holds.
+        read_only = self._rules(
+            "        migrations.RunSQL(\n"
+            "            [('SELECT COUNT(*) FROM orders_order', [None])],\n"
+            "            migrations.RunSQL.noop),\n" + add,
+            extra="    initial = True\n",
+        )
+        self.assertNotIn("add_field_not_null_no_default", read_only)
+        # Cross-file: 0001 seeds via a pair-form INSERT, so a second
+        # initial = True migration is not exempt (replay-loop detection).
+        seeded_pair = (
+            "from django.db import migrations\n"
+            "class Migration(migrations.Migration):\n"
+            "    dependencies = []\n"
+            "    operations = [\n"
+            "        migrations.RunSQL(\n"
+            "            [('INSERT INTO orders_order (id) VALUES (1)', [1])],\n"
+            "            migrations.RunSQL.noop),\n"
+            "    ]\n"
+        )
+        with TemporaryDirectory() as tmp:
+            app = Path(tmp) / "orders"
+            _write(app, "0001_initial", seeded_pair)
+            _write(app, "0002_change", _second(add, extra="    initial = True\n"))
+            findings = analyze_migration_risks(
+                tmp, current_schema=_empty_schema()
+            )
+        replayed = _by_rule(findings)
+        self.assertIn("add_field_not_null_no_default", replayed)
+        self.assertEqual(
+            replayed["add_field_not_null_no_default"][0].severity, "warning"
+        )
+
     def test_nullable_unique_column_fills_rows_with_null(self) -> None:
         for field in (
             "models.CharField(blank=True, max_length=12, null=True, unique=True)",

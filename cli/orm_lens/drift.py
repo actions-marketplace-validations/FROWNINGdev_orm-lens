@@ -460,8 +460,9 @@ def detect_drift(
         tests. Built from the workspace parser when omitted.
     """
     root = str(Path(project_root).resolve())
+    parent_links: dict[str, dict[str, set[str]]] = {}
     if declared is None:
-        declared = _build_current_schema(root)
+        declared = _build_current_schema(root, parent_links=parent_links)
 
     report = DriftReport()
     seen_apps: set[str] = set()
@@ -485,6 +486,7 @@ def detect_drift(
     for app_label, migrated in merged.items():
         seen_apps.add(app_label)
         declared_app = declared.get(app_label, {})
+        inferred_links = parent_links.get(app_label, {})
 
         for model, migrated_fields in migrated.items():
             declared_fields = declared_app.get(model)
@@ -495,7 +497,9 @@ def detect_drift(
                 continue
             declared_set = set(declared_fields) - _IMPLICIT_FIELDS
             missing_in_migrations = sorted(declared_set - migrated_fields)
-            missing_in_models = sorted(migrated_fields - declared_set)
+            # The parser can infer the wrong parent if an import is conditional.
+            # Its suggested link can suppress an advisory, but cannot fail CI.
+            missing_in_models = sorted(migrated_fields - declared_set - inferred_links.get(model, set()))
             if missing_in_migrations or missing_in_models:
                 report.drifted.append(
                     ModelDrift(

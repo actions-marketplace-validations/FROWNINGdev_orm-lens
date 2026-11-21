@@ -797,9 +797,12 @@ def _configured_app_label(package: Path) -> str | None:
 
 
 def _build_current_schema(
-    project_root: str, *, app_labels_by_package: dict[Path, str] | None = None
+    project_root: str,
+    *,
+    app_labels_by_package: dict[Path, str] | None = None,
+    parent_links: dict[str, dict[str, set[str]]] | None = None,
 ) -> dict[str, dict[str, set]]:
-    """Return ``{app_name: {model_name_lower: {field_names}}}`` from parser.
+    """Return declared fields and optionally collect inferred parent links separately.
 
     Failures are swallowed — cross-reference rule is best-effort.
     """
@@ -829,8 +832,171 @@ def _build_current_schema(
             # concrete child's table, so a migration that creates them is not
             # drift. Reported as #58 against django-guardian, where four such
             # fields read as "migrated but no longer declared".
-            app_map[model.name.lower()] = {f.name for f in model.all_fields()}
+            name = model.name.lower()
+            app_map[name] = {f.name for f in model.all_fields()}
+            if parent_links is not None:
+                parent_links.setdefault(app_label, {})[name] = model.implicit_parent_links
     return schema
+
+
+def _module_string_constants(tree: ast.Module) -> dict[str, str]:
+    """Module-level ``NAME = "sql"`` assigns, so RunSQL(SOME_SQL) is readable."""
+    out: dict[str, str] = {}
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    out[t.id] = node.value.value
+    return out
+
+
+_ROW_CHANGE_VERB_RE = re.compile(r"^(INSERT|UPDATE|DELETE|TRUNCATE)\b", re.I)
+
+_DOLLAR_TAG_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$")
+
+
+def _leading_row_change_verb(stmt: str) -> bool:
+    stripped = stmt.lstrip()
+    while stripped.startswith("("):
+        stripped = stripped[1:].lstrip()
+    return bool(_ROW_CHANGE_VERB_RE.match(stripped))
+
+
+def _mask_sql_text(sql: str) -> str:
+    """Blank quoted literals and comments to spaces, keeping SQL structure.
+
+    PostgreSQL allows arbitrary characters inside quotes, so ``--`` in a
+    string literal is data, not a comment — and a ``;`` or ``(`` inside one
+    is data too. Dollar-quoted bodies (``$$...$$``) are opaque for the same
+    reason. With every literal and comment reduced to spaces, verb
+    classification, ``;`` splitting and paren matching only ever see real
+    statement structure.
+    """
+    out = list(sql)
+    i, n = 0, len(sql)
+    while i < n:
+        ch = sql[i]
+        if ch in ("'", '"'):
+            quote = ch
+            out[i] = " "
+            i += 1
+            while i < n:
+                if sql[i] == quote:
+                    if sql[i + 1 : i + 2] == quote:  # doubled quote stays inside
+                        out[i] = out[i + 1] = " "
+                        i += 2
+                        continue
+                    out[i] = " "
+                    i += 1
+                    break
+                out[i] = " "
+                i += 1
+            continue
+        if ch == "$":
+            tag = _DOLLAR_TAG_RE.match(sql, i)
+            if tag:
+                end = sql.find(tag.group(), tag.end())
+                end = n if end == -1 else end + len(tag.group())
+                for j in range(i, end):
+                    out[j] = " "
+                i = end
+                continue
+        if ch == "-" and sql[i + 1 : i + 2] == "-":
+            while i < n and sql[i] != "\n":  # keep the newline as structure
+                out[i] = " "
+                i += 1
+            continue
+        if ch == "/" and sql[i + 1 : i + 2] == "*":
+            end = sql.find("*/", i + 2)
+            end = n if end == -1 else end + 2
+            for j in range(i, end):
+                out[j] = " "
+            i = end
+            continue
+        i += 1
+    return "".join(out)
+
+
+def _sql_changes_rows_sql(sql: str) -> bool:
+    """SQL whose statements insert, delete, truncate or update rows.
+
+    Classify each ``;``-separated statement by its leading verb, so a
+    locking ``SELECT ... FOR UPDATE`` is not mistaken for a row change.
+    Literals and comments are blanked first, so ``'--'`` inside a string
+    never reads as a comment; a data-modifying CTE body (``WITH x AS
+    (INSERT ...) SELECT ...``) is classified as well as the statement
+    that follows it, since PostgreSQL runs it even for a SELECT tail.
+    """
+    masked = _mask_sql_text(sql)
+    for stmt in masked.split(";"):
+        if _leading_row_change_verb(stmt):
+            return True
+        if re.match(r"\s*WITH\b", stmt, re.I):
+            # The action verb may live inside a CTE body rather than after
+            # the last group, so classify each top-level parenthesized body
+            # and the tail that follows it.
+            depth = 0
+            body_start = None
+            for match in re.finditer(r"[()]", stmt):
+                if match.group() == "(":
+                    if depth == 0:
+                        body_start = match.end()
+                    depth += 1
+                elif depth > 0:
+                    depth -= 1
+                    if depth == 0 and body_start is not None:
+                        if _leading_row_change_verb(stmt[body_start:match.start()]):
+                            return True
+                        if _leading_row_change_verb(stmt[match.end():]):
+                            return True
+                        body_start = None
+    return False
+
+
+def _tree_has_data_op(tree: ast.Module) -> bool:
+    """RunPython or row-changing RunSQL anywhere in this migration file.
+
+    Read by the per-app replay loop: a data operation in an earlier
+    migration means the tables this app seeds are not guaranteed empty
+    when a later ``initial = True`` migration executes.
+    """
+    strings = _module_string_constants(tree)
+    cls = _find_migration_class(tree)
+    if cls is None:
+        return False
+    for stmt in cls.body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+        if "operations" not in targets or not isinstance(stmt.value, (ast.List, ast.Tuple)):
+            continue
+        for elt in stmt.value.elts:
+            if not isinstance(elt, ast.Call):
+                continue
+            op = _call_op_name(elt)
+            if op == "RunPython":
+                return True
+            if op != "RunSQL":
+                continue
+            node = _get_kwarg(elt, "sql") or (elt.args[0] if elt.args else None)
+            parts = node.elts if isinstance(node, (ast.List, ast.Tuple)) else [node]
+            for part in parts:
+                if isinstance(part, ast.Tuple) and part.elts:
+                    # Django also accepts query/parameter pairs; the first
+                    # element is the SQL statement.
+                    part = part.elts[0]
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    if _sql_changes_rows_sql(part.value):
+                        return True
+                elif isinstance(part, ast.Name) and _sql_changes_rows_sql(
+                    strings.get(part.id, "")
+                ):
+                    return True
+    return False
 
 
 class MigrationRiskAnalyzer:
@@ -850,6 +1016,7 @@ class MigrationRiskAnalyzer:
         migration_name: str,
         migration_index: int,
         current_schema: dict[str, dict[str, set]] | None = None,
+        earlier_data_ops: bool = False,
     ) -> None:
         self.file_path = file_path
         self.app = app
@@ -867,6 +1034,17 @@ class MigrationRiskAnalyzer:
         # database. Where the replaced migrations are applied, Django marks it
         # applied without running it, so it never touches populated tables.
         self.is_squashed = False
+        # A second ``initial = True`` migration (makemigrations splits cross-app
+        # FKs into one) also only ever runs on a fresh database — as long as no
+        # earlier migration of the app runs a data operation. A 0001 that seeds
+        # rows leaves the table populated when 0002 executes, so the fresh-
+        # database exemption must not apply then.
+        self.is_initial = False
+        # A data operation in any earlier migration of the same app (replay
+        # order): it may have seeded or emptied the table before this file
+        # runs, so a second ``initial = True`` migration is not automatically
+        # fresh either.
+        self.earlier_data_ops = earlier_data_ops
         # (line, model, field-or-None) for every operation that brings a field
         # or a whole model (back) into existence. A RemoveField followed by an
         # AddField or a RenameField onto the same name, or a DeleteModel
@@ -876,6 +1054,11 @@ class MigrationRiskAnalyzer:
         # A data operation earlier in the file that may empty or backfill the
         # table before a NOT NULL column arrives.
         self.data_op_before = False
+        # Operation positions replayed by _walk_operations: where each model
+        # was created and where data operations ran, so a data operation that
+        # precedes a model's creation cannot suppress its emptiness exemption.
+        self.data_op_positions: list[int] = []
+        self.created_at: dict[str, int] = {}
         self.module_strings: dict[str, str] = {}
 
     # ------------------------------------------------------------------
@@ -892,25 +1075,20 @@ class MigrationRiskAnalyzer:
             return []
 
         # Module-level string constants, so RunSQL(SOME_SQL) can be read.
-        for node in tree.body:
-            if (
-                isinstance(node, ast.Assign)
-                and isinstance(node.value, ast.Constant)
-                and isinstance(node.value.value, str)
-            ):
-                for t in node.targets:
-                    if isinstance(t, ast.Name):
-                        self.module_strings[t.id] = node.value.value
+        self.module_strings = _module_string_constants(tree)
 
         for node in tree.body:
             if not isinstance(node, ast.ClassDef) or node.name != "Migration":
                 continue
             assigns = [stmt for stmt in node.body if isinstance(stmt, ast.Assign)]
-            # `replaces` can sit before or after `operations`; read it first.
+            # `replaces` and `initial` can sit before or after `operations`;
+            # read them first.
             for stmt in assigns:
                 targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
                 if "replaces" in targets and isinstance(stmt.value, (ast.List, ast.Tuple)):
                     self.is_squashed = bool(stmt.value.elts)
+                if "initial" in targets and isinstance(stmt.value, ast.Constant):
+                    self.is_initial = stmt.value.value is True
             for stmt in assigns:
                 targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
                 if "operations" not in targets:
@@ -925,7 +1103,7 @@ class MigrationRiskAnalyzer:
     def _walk_operations(self, ops_node: ast.AST) -> None:
         if not isinstance(ops_node, (ast.List, ast.Tuple)):
             return
-        for elt in ops_node.elts:
+        for position, elt in enumerate(ops_node.elts):
             if not isinstance(elt, ast.Call):
                 continue
             op = _call_op_name(elt)
@@ -936,13 +1114,16 @@ class MigrationRiskAnalyzer:
                 if created is None and elt.args:
                     created = _literal_or_none(elt.args[0])
                 if isinstance(created, str):
-                    self.created_models.add(created.lower())
+                    created = created.lower()
+                    self.created_models.add(created)
+                    self.created_at[created] = position
             handler = getattr(self, f"_check_{op}", None)
             self._record_introduction(op, elt)
             if op == "RunPython" or (op == "RunSQL" and self._sql_changes_rows(elt)):
                 # Read only by operations later in the list; this element's own
                 # handler does not look at it.
                 self.data_op_before = True
+                self.data_op_positions.append(position)
             if handler is not None:
                 try:
                     handler(elt)
@@ -1005,31 +1186,62 @@ class MigrationRiskAnalyzer:
             self.introduced.append((line, model.lower(), name if isinstance(name, str) else None))
 
     def _sql_changes_rows(self, call: ast.Call) -> bool:
-        """RunSQL whose forward SQL deletes, truncates or updates rows."""
+        """RunSQL whose forward SQL inserts, deletes, truncates or updates rows."""
         node = _get_kwarg(call, "sql") or (call.args[0] if call.args else None)
         parts = node.elts if isinstance(node, (ast.List, ast.Tuple)) else [node]
         for part in parts:
+            if isinstance(part, ast.Tuple) and part.elts:
+                # Django also accepts query/parameter pairs; the first
+                # element is the SQL statement.
+                part = part.elts[0]
             if isinstance(part, ast.Constant) and isinstance(part.value, str):
                 sql = part.value
             elif isinstance(part, ast.Name):
                 sql = self.module_strings.get(part.id, "")
             else:
                 continue
-            if re.search(r"\b(DELETE|TRUNCATE|UPDATE)\b", sql, re.I):
+            if _sql_changes_rows_sql(sql):
                 return True
         return False
 
     def _table_likely_non_empty(self, model: Any = None) -> bool:
         """Heuristic: anything after 0001_initial → assume the table has rows.
 
-        Except a table this same migration created, and anything in a
-        squashed migration, which only runs on a fresh database.
+        Except a table this same migration created, anything in a squashed
+        migration, or a second ``initial = True`` migration with no earlier
+        data operation — all of which only ever run on a fresh database. An
+        initial migration that runs a data operation first may populate the
+        table before the NOT NULL column arrives, so it is not exempt — and
+        neither is one whose app ran a data operation in an earlier migration
+        (a seeded 0001 leaves rows behind when 0002 executes). Nor is a table
+        created in this migration still empty once a data operation has run
+        against it.
         """
-        if self.is_squashed:
+        if self.is_squashed or (
+            self.is_initial
+            and not self.data_op_before
+            and not self.earlier_data_ops
+        ):
             return False
-        if isinstance(model, str) and model.lower() in self.created_models:
+        if (
+            isinstance(model, str)
+            and model.lower() in self.created_models
+            and not self._data_op_after_creation(model.lower())
+        ):
             return False
         return self.migration_index > 0
+
+    def _data_op_after_creation(self, model_lower: str) -> bool:
+        """True when a data operation runs after this migration created the model.
+
+        A data operation placed before ``CreateModel`` cannot have populated
+        the table, so it must not reject the creation-based emptiness
+        exemption; only one that runs against the created table can.
+        """
+        created = self.created_at.get(model_lower)
+        if created is None:
+            return self.data_op_before
+        return any(position > created for position in self.data_op_positions)
 
     def _model_field_names(self, model_lower: str) -> set | None:
         app_schema = self.current_schema.get(self.app)
@@ -1082,6 +1294,18 @@ class MigrationRiskAnalyzer:
                 description += (
                     " A data operation runs earlier in this migration; if it "
                     "empties the table, this is safe."
+                )
+                nn_confidence, nn_severity = "medium", "warning"
+            elif self.is_initial and self.earlier_data_ops:
+                # Only an ``initial = True`` migration gets this historical
+                # soften: it normally runs on a fresh database, so an earlier
+                # data operation is the only thing that could have put rows
+                # there. An ordinary later migration keeps critical severity
+                # — seeded rows persist until something deletes them, so a
+                # past data operation says nothing about the table now.
+                description += (
+                    " A data operation runs in an earlier migration of this "
+                    "app; if it emptied the table, this is safe."
                 )
                 nn_confidence, nn_severity = "medium", "warning"
             self._add(
@@ -1625,16 +1849,20 @@ def analyze_migration_risks(
         # (migration index, line, model, field-or-None) for every operation in
         # the app that brings a name (back) into existence.
         introduced: list[tuple[int, int, str, str | None]] = []
-        for idx, path in enumerate(ordered_files):
+        seen_data_op = False
+        for idx, (path, tree) in enumerate(ordered):
             analyzer = MigrationRiskAnalyzer(
                 file_path=path,
                 app=app_label,
                 migration_name=path.stem,
                 migration_index=idx,
                 current_schema=current_schema,
+                earlier_data_ops=seen_data_op,
             )
             app_findings.extend((idx, f) for f in analyzer.analyze())
             introduced.extend((idx, line, m, fl) for line, m, fl in analyzer.introduced)
+            # Accumulate after analyzing: only earlier migrations count.
+            seen_data_op = seen_data_op or _tree_has_data_op(tree)
         findings.extend(
             f for idx, f in app_findings if not _reintroduced_later(idx, f, introduced)
         )

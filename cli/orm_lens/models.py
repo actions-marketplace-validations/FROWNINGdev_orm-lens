@@ -32,6 +32,8 @@ class ParsedField:
     """Abstract base this field was declared on, when it reached the model
     through inheritance rather than its own class body. ``None`` for a field
     the class declares itself."""
+    declaration_file: str | None = field(default=None, repr=False, compare=False)
+    """Source module for resolving class references in inherited fields."""
 
     def to_dict(self) -> dict:
         out = {
@@ -141,6 +143,8 @@ class ParsedModel:
     removed_fields: list[str] = field(default_factory=list)
     """Names the class body sets to ``None``, which removes a field inherited
     from an abstract base (``username = None`` on an ``AbstractUser``)."""
+    implicit_parent_links: set[str] = field(default_factory=set)
+    """Auto-created Django parent-link columns that can suppress drift advisories."""
     mptt_field_names: dict[str, str | None] = field(default_factory=dict, repr=False, compare=False)
     """Internal MPTTMeta names, with None for a dynamically set name."""
 

@@ -25,6 +25,7 @@ from orm_lens.drift import (
     format_drift,
     replay_app,
 )
+from orm_lens.parser import scan_workspace
 from tests.test_nested_abstract_bases import write_project
 
 HEADER = "from django.db import migrations, models\n\n\n"
@@ -560,6 +561,269 @@ class DetectDriftTest(unittest.TestCase):
         self.assertEqual(report.drifted, [])
         self.assertEqual(report.blocking_count, 0)
         self.assertIn("no drift", format_drift(report))
+
+    def test_inheritance_parent_links_match_the_migrated_schema(self) -> None:
+        blog = self.root / "blog"
+        (blog / "models.py").write_text(
+            "from django.db import models\n\n"
+            "class Post(models.Model):\n"
+            "    title = models.CharField(max_length=100)\n\n"
+            "class PublishedPost(Post):\n"
+            "    summary = models.TextField()\n\n"
+            "class EditedPost(Post):\n"
+            "    parent = models.OneToOneField(Post, models.CASCADE, parent_link=True)\n\n"
+            "class AbstractPost(models.Model):\n"
+            "    notes = models.TextField()\n"
+            "    class Meta:\n"
+            "        abstract = True\n\n"
+            "class LocalPost(AbstractPost):\n"
+            "    pass\n\n"
+            "class ProxyPost(Post):\n"
+            "    class Meta:\n"
+            "        proxy = True\n\n"
+            "class NestedProxyPost(ProxyPost):\n"
+            "    class Meta:\n"
+            "        proxy = True\n\n"
+            "class FeaturedPost(NestedProxyPost):\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        (blog / "migrations" / "0002_post_types.py").write_text(
+            _migration(
+                '        migrations.CreateModel(name="PublishedPost", fields=[\n'
+                '            ("post_ptr", models.OneToOneField(to="blog.post", parent_link=True)),\n'
+                '            ("summary", models.TextField()),\n'
+                '        ], bases=("blog.post",)),\n'
+                '        migrations.CreateModel(name="EditedPost", fields=[("parent", None)]),\n'
+                '        migrations.CreateModel(name="LocalPost", fields=[("notes", None)]),\n'
+                '        migrations.CreateModel(name="ProxyPost", fields=[], options={"proxy": True}),\n'
+                '        migrations.CreateModel(name="NestedProxyPost", fields=[], options={"proxy": True}),\n'
+                '        migrations.CreateModel(name="FeaturedPost", fields=[\n'
+                '            ("post_ptr", models.OneToOneField(to="blog.post", parent_link=True)),\n'
+                '        ], bases=("blog.nestedproxypost",)),\n',
+                '[("blog", "0001_initial")]',
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(detect_drift(self.root).drifted, [])
+
+    def test_explicit_parent_link_uses_effective_meta_app_label(self) -> None:
+        blog = self.root / "blog"
+        (blog / "models.py").write_text(
+            "from django.db import models\n\n"
+            "class Parent(models.Model):\n"
+            "    class Meta:\n"
+            "        app_label = 'effective'\n\n"
+            "class Child(Parent):\n"
+            "    parent_link = models.OneToOneField(\n"
+            "        'effective.Parent', on_delete=models.CASCADE, parent_link=True\n"
+            "    )\n\n"
+            "class LocalParent(models.Model):\n"
+            "    pass\n\n"
+            "class LocalChild(LocalParent):\n"
+            "    local_link = models.OneToOneField(\n"
+            "        'LocalParent', on_delete=models.CASCADE, parent_link=True\n"
+            "    )\n\n"
+            "class PlainParent(models.Model):\n"
+            "    pass\n\n"
+            "class PlainChild(PlainParent):\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+
+        models = {
+            model.name: model
+            for app in scan_workspace(str(self.root)).apps
+            for model in app.models
+        }
+        self.assertEqual(models["Child"].implicit_parent_links, set())
+        self.assertEqual(models["LocalChild"].implicit_parent_links, set())
+        self.assertEqual(models["PlainChild"].implicit_parent_links, {"plainparent_ptr"})
+
+    def test_explicit_parent_link_uses_literal_app_config_label(self) -> None:
+        labelled = self.root / "labelled"
+        labelled.mkdir()
+        (labelled / "apps.py").write_text(
+            "from django.apps import AppConfig\n\n"
+            "class LabelledConfig(AppConfig):\n"
+            "    name = 'labelled'\n"
+            "    label = 'effective'\n",
+            encoding="utf-8",
+        )
+        (labelled / "models.py").write_text(
+            "from django.db import models\n\n"
+            "class Parent(models.Model):\n"
+            "    pass\n\n"
+            "class Child(Parent):\n"
+            "    parent_link = models.OneToOneField(\n"
+            "        'effective.Parent', on_delete=models.CASCADE, parent_link=True\n"
+            "    )\n\n"
+            "class LocalChild(Parent):\n"
+            "    local_link = models.OneToOneField(\n"
+            "        'Parent', on_delete=models.CASCADE, parent_link=True\n"
+            "    )\n\n"
+            "class MetaParent(models.Model):\n"
+            "    class Meta:\n"
+            "        app_label = 'meta_effective'\n\n"
+            "class MetaChild(MetaParent):\n"
+            "    meta_link = models.OneToOneField(\n"
+            "        'meta_effective.MetaParent', on_delete=models.CASCADE, parent_link=True\n"
+            "    )\n\n"
+            "class ProxyParent(models.Model):\n"
+            "    pass\n\n"
+            "class ProxyParentView(ProxyParent):\n"
+            "    class Meta:\n"
+            "        proxy = True\n\n"
+            "class ProxyChild(ProxyParentView):\n"
+            "    pass\n",
+            encoding="utf-8",
+        )
+        for package in ("fallback", "ambiguous"):
+            app_dir = self.root / package
+            app_dir.mkdir()
+            (app_dir / "models.py").write_text(
+                "from django.db import models\n\n"
+                "class Parent(models.Model):\n"
+                "    pass\n\n"
+                "class Child(Parent):\n"
+                "    link = models.OneToOneField(\n"
+                f"        '{package}.Parent', on_delete=models.CASCADE, parent_link=True\n"
+                "    )\n",
+                encoding="utf-8",
+            )
+        (self.root / "ambiguous" / "apps.py").write_text(
+            "from django.apps import AppConfig\n\n"
+            "class FirstConfig(AppConfig):\n"
+            "    name = 'ambiguous'\n"
+            "    label = 'first'\n\n"
+            "class SecondConfig(AppConfig):\n"
+            "    name = 'ambiguous'\n"
+            "    label = 'second'\n",
+            encoding="utf-8",
+        )
+
+        models = {
+            (model.app_name, model.name): model
+            for app in scan_workspace(str(self.root)).apps
+            for model in app.models
+        }
+        for package, model in (
+            ("labelled", "Child"),
+            ("labelled", "LocalChild"),
+            ("labelled", "MetaChild"),
+            ("fallback", "Child"),
+            ("ambiguous", "Child"),
+        ):
+            with self.subTest(package=package, model=model):
+                self.assertEqual(models[package, model].implicit_parent_links, set())
+        self.assertEqual(models["labelled", "ProxyChild"].implicit_parent_links, {"proxyparent_ptr"})
+
+    def test_conditional_parent_link_is_not_a_blocking_field(self) -> None:
+        for app, parent in (("basepage", "BasePage"), ("core", "Page")):
+            directory = self.root / app
+            directory.mkdir()
+            (directory / "models.py").write_text(
+                "from django.db import models\n"
+                f"class {parent}(models.Model):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+        blog = self.root / "blog"
+        (blog / "models.py").write_text(
+            "from django.db import models\n"
+            "import swapper\n"
+            'if swapper.is_swapped("core", "Page"):\n'
+            "    from basepage.models import BasePage as Page\n"
+            "else:\n"
+            "    from core.models import Page\n"
+            "class Post(Page):\n"
+            "    title = models.CharField(max_length=100)\n",
+            encoding="utf-8",
+        )
+        (blog / "migrations" / "0001_initial.py").write_text(
+            _migration(
+                '        migrations.CreateModel(name="Post", fields=[\n'
+                '            (parent_rel_name, models.OneToOneField(to=page_model, parent_link=True)),\n'
+                '            ("title", models.CharField(max_length=100)),\n'
+                "        ]),\n"
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(detect_drift(self.root).drifted, [])
+
+    def test_explicit_parent_link_leaves_other_concrete_parent_links_implicit(self) -> None:
+        accounts = self.root / "accounts"
+        accounts.mkdir()
+        (accounts / "models.py").write_text(
+            "from django.db import models\n\n"
+            "class Author(models.Model):\n"
+            "    name = models.CharField(max_length=100)\n",
+            encoding="utf-8",
+        )
+        blog = self.root / "blog"
+        (blog / "models.py").write_text(
+            "from django.db import models\n"
+            "from accounts.models import Author as Writer\n\n"
+            "class Post(models.Model):\n"
+            "    title = models.CharField(max_length=100)\n\n"
+            "class Byline(Post, Writer):\n"
+            "    post = models.OneToOneField('blog.Post', models.CASCADE, parent_link=True)\n",
+            encoding="utf-8",
+        )
+        (blog / "migrations" / "0002_byline.py").write_text(
+            _migration(
+                '        migrations.CreateModel(name="Byline", fields=[("post", None)]),\n',
+                '[("blog", "0001_initial")]',
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(detect_drift(self.root).drifted, [])
+
+        (blog / "migrations" / "0002_byline.py").write_text(
+            _migration(
+                '        migrations.CreateModel(name="Byline", fields=[("author_ptr", None)]),\n',
+                '[("blog", "0001_initial")]',
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            detect_drift(self.root).drifted,
+            [ModelDrift(app="blog", model="byline", missing_in_migrations=["post"])],
+        )
+
+    def test_inherited_explicit_parent_link_uses_its_declaration_file(self) -> None:
+        blog = self.root / "blog"
+        (blog / "abstract_models.py").write_text(
+            "from django.db import models\n\n"
+            "class Post(models.Model):\n"
+            "    title = models.CharField(max_length=100)\n\n"
+            "class ParentLink(models.Model):\n"
+            "    parent = models.OneToOneField(Post, models.CASCADE, parent_link=True)\n"
+            "    class Meta:\n"
+            "        abstract = True\n",
+            encoding="utf-8",
+        )
+        (blog / "models.py").write_text(
+            "from django.db import models\n"
+            "from .abstract_models import ParentLink, Post as Root\n\n"
+            "class PublishedPost(Root, ParentLink):\n"
+            "    summary = models.TextField()\n",
+            encoding="utf-8",
+        )
+        (blog / "migrations" / "0002_published.py").write_text(
+            _migration(
+                '        migrations.CreateModel(name="PublishedPost", fields=[\n'
+                '            ("parent", None), ("summary", None),\n'
+                '        ]),\n',
+                '[("blog", "0001_initial")]',
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(detect_drift(self.root).drifted, [])
 
     def test_mptt_generated_tree_fields_do_not_report_drift(self) -> None:
         blog = self.root / "blog"
