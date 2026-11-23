@@ -104,6 +104,11 @@ const CLASS_RE =
 const CLASS_START_RE =
   /^class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^\]]*\])?\s*\(/;
 
+// A call in a base list, e.g. `ExportModelOperationsMixin("recipe")` — its
+// result can't be resolved statically, so `readMultilineClass` drops the
+// call and keeps the other bases (issue #335).
+const CALL_IN_BASES_RE = /[A-Za-z_][\w.]*\s*\([^()]*\)/g;
+
 function readMultilineClass(
   lines: string[],
   startIdx: number
@@ -121,7 +126,18 @@ function readMultilineClass(
     }
     if (i > startIdx) buffer += ' ' + src;
     if (sawOpen && depth === 0) {
-      const m = buffer.match(CLASS_RE);
+      const [head, ...restParts] = buffer.split('(');
+      let rest = restParts.join('(');
+      let stripped = rest;
+      do {
+        // `Mixin("label")` in a base list is a call whose result can't be
+        // resolved statically; drop it, keep the other bases. The loop
+        // strips nested calls from the inside out, so
+        // `Mixin(get_label("x"))` is dropped in two passes.
+        rest = stripped;
+        stripped = rest.replace(CALL_IN_BASES_RE, '');
+      } while (stripped !== rest);
+      const m = (head + '(' + rest).match(CLASS_RE);
       if (m) return { match: m, endIdx: i };
       break;
     }
@@ -595,11 +611,20 @@ const PERMISSIONS_MIXIN = [
 /**
  * Fields of `django.contrib.auth`'s abstract bases, which live in
  * site-packages where a workspace scan never looks. `is_active` on
- * `AbstractBaseUser` is a plain class attribute, not a field. A workspace class
- * of the same name wins. Mirrors `DJANGO_ABSTRACT_BASES` in
- * cli/orm_lens/parser.py.
+ * `AbstractBaseUser` is a plain class attribute, not a field.
+ * `TimeStampedModel` declares `created` and `modified` in both
+ * django-extensions and django-model-utils. A workspace class of the same name
+ * wins. Mirrors
+ * `DJANGO_ABSTRACT_BASES` in cli/orm_lens/parser.py.
  */
 const DJANGO_ABSTRACT_BASES = new Map<string, readonly ParsedField[]>([
+  [
+    'TimeStampedModel',
+    [
+      djangoField('created', 'DateTimeField', 'auto_now_add=True', 'TimeStampedModel'),
+      djangoField('modified', 'DateTimeField', 'auto_now=True', 'TimeStampedModel'),
+    ],
+  ],
   ['AbstractBaseUser', ABSTRACT_BASE_USER],
   ['PermissionsMixin', PERMISSIONS_MIXIN],
   [

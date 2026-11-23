@@ -499,7 +499,9 @@ def detect_drift(
             missing_in_migrations = sorted(declared_set - migrated_fields)
             # The parser can infer the wrong parent if an import is conditional.
             # Its suggested link can suppress an advisory, but cannot fail CI.
-            missing_in_models = sorted(migrated_fields - declared_set - inferred_links.get(model, set()))
+            missing_in_models = sorted(
+                migrated_fields - _IMPLICIT_FIELDS - declared_set - inferred_links.get(model, set())
+            )
             if missing_in_migrations or missing_in_models:
                 report.drifted.append(
                     ModelDrift(

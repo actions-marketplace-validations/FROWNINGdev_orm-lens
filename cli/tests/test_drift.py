@@ -940,6 +940,38 @@ class DetectDriftTest(unittest.TestCase):
         # Declared without `id`, migrated with it — Django adds it either way.
         self.assertEqual(self._detect({"blog": {"post": {"title"}}}).drifted, [])
 
+    def test_rename_field_to_implicit_id_is_never_drift(self) -> None:
+        # Issue #328: a primary key renamed to `id` (and altered to an
+        # auto-created AutoField) must not be reported as "migrated but no
+        # longer declared", since `id` is implicit on both sides.
+        app = self.root / "cases" / "migrations"
+        app.mkdir(parents=True, exist_ok=True)
+        (app / "__init__.py").write_text("", encoding="utf-8")
+        (app / "0001_initial.py").write_text(
+            _migration(
+                '        migrations.CreateModel(name="TestCase", fields=[\n'
+                '            ("case_id", models.AutoField(primary_key=True, serialize=False)),\n'
+                '            ("summary", models.CharField(max_length=255)),\n'
+                "        ]),\n"
+            ),
+            encoding="utf-8",
+        )
+        (app / "0002_remove_autofield.py").write_text(
+            _migration(
+                '        migrations.RenameField(model_name="testcase", old_name="case_id", new_name="id"),\n'
+                '        migrations.AlterField(\n'
+                '            model_name="testcase",\n'
+                '            name="id",\n'
+                '            field=models.AutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID"),\n'
+                "        ),\n"
+            ),
+            encoding="utf-8",
+        )
+        report = detect_drift(
+            self.root, declared={"blog": {"post": {"id", "title"}}, "cases": {"testcase": {"summary"}}}
+        )
+        self.assertEqual(report.drifted, [])
+
     def test_blocking_entries_sort_first(self) -> None:
         report = self._detect({"blog": {"post": set(), "tag": {"name"}}})
         self.assertTrue(report.drifted[0].is_blocking)

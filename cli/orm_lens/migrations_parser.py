@@ -69,7 +69,8 @@ def _find_migrations_dirs(root: str, app_label: str) -> list[Path]:
 
     A workspace may contain the same app label in multiple locations
     (mono-repos, vendored copies). We union them so the caller sees every
-    migration file matching the label.
+    migration file matching the label. An app is also found by the label its
+    ``apps.py`` declares, so ``misago_threads`` finds ``threads/migrations``.
     """
     matches: list[Path] = []
     root_path = Path(root)
@@ -81,7 +82,7 @@ def _find_migrations_dirs(root: str, app_label: str) -> list[Path]:
         ]
         if os.path.basename(dirpath) == "migrations":
             parent = os.path.basename(os.path.dirname(dirpath))
-            if parent == app_label:
+            if parent == app_label or _configured_app_label(Path(dirpath).parent) == app_label:
                 matches.append(Path(dirpath))
     return matches
 
@@ -420,8 +421,16 @@ def describe_migration_dependency(app_label: str, root: str) -> dict[str, Any]:
             migrations.append(parsed)
 
     migrations.sort(key=lambda m: m["name"])
+    # Dependency tuples carry the app label, which AppConfig.label can set
+    # apart from the folder name. apps.py comes first: the tuples alone stay
+    # silent when another app has a migration of the same name.
+    label = (
+        _configured_app_label(dirs[0].parent)
+        or _resolve_app_label({m["name"]: m["dependencies"] for m in migrations}, app_label)
+        or app_label
+    )
     roots, leaves, cross_app_deps = _compute_roots_leaves_cross(
-        _collapse_squashed(migrations, app_label), app_label
+        _collapse_squashed(migrations, label), label
     )
 
     return {
@@ -559,7 +568,8 @@ _EMPTY_STRING_FIELDS = frozenset(
     }
 )
 
-_AUTO_NOW_FIELDS = frozenset({"DateField", "DateTimeField", "TimeField"})
+# Suffixes, so subclasses like django-extensions' ModificationDateTimeField match too.
+_AUTO_NOW_SUFFIXES = ("DateField", "DateTimeField", "TimeField")
 
 _STRING_FIELD_SUFFIXES = ("CharField", "TextField", "SlugField", "EmailField", "URLField")
 
@@ -595,10 +605,37 @@ def _has_effective_default(field_call: ast.Call, field_type: str) -> bool:
         return True
     if _kwarg_literal(field_call, "blank") is True and _is_string_field(field_call, field_type):
         return True
-    return field_type in _AUTO_NOW_FIELDS and (
+    return field_type.endswith(_AUTO_NOW_SUFFIXES) and (
         _kwarg_literal(field_call, "auto_now") is True
         or _kwarg_literal(field_call, "auto_now_add") is True
     )
+
+
+# Fields that are nullable by definition. ``NullBooleanField.__init__`` sets
+# ``null=True`` itself, so migrations never write the keyword for it. Django
+# 4.0 removed the field from models but keeps it for old migrations.
+_NULLABLE_BY_DEFINITION = frozenset({"NullBooleanField"})
+
+
+def _is_nullable(field_call: ast.Call, field_type: str) -> bool:
+    """True when the column accepts NULL: ``null=True`` or a nullable-by-definition field."""
+    return (
+        _kwarg_literal(field_call, "null") is True
+        or field_type in _NULLABLE_BY_DEFINITION
+    )
+
+
+def _is_not_null(field_call: ast.Call, field_type: str) -> bool:
+    """True when the column is NOT NULL: ``null=False`` or no ``null=`` at all.
+
+    A ``null=`` that is not a literal (a variable, a call) is neither: its
+    value is unknown here, so no NOT NULL finding is claimed for it.
+    """
+    if field_type in _NULLABLE_BY_DEFINITION:
+        return False
+    if not _has_kwarg(field_call, "null"):
+        return True
+    return _kwarg_literal(field_call, "null") is False
 
 
 def _migration_prefix(name: str) -> int:
@@ -1260,7 +1297,6 @@ class MigrationRiskAnalyzer:
         if field_call is None:
             return
 
-        null_val = _kwarg_literal(field_call, "null")
         has_default = _has_kwarg(field_call, "default")
         unique_val = _kwarg_literal(field_call, "unique")
         field_type = _field_type(field_call) or "Field"
@@ -1273,8 +1309,9 @@ class MigrationRiskAnalyzer:
         # Rule 1: NOT NULL with no default on a populated table.
         # ``null=True`` explicit means nullable → no risk.
         # No null kwarg means default False (NOT NULL) → risk if no default and
-        # the table already exists.
-        is_not_null = null_val is False or null_val is None
+        # the table already exists. NullBooleanField is the exception: it is
+        # nullable without the keyword (see _is_not_null).
+        is_not_null = _is_not_null(field_call, field_type)
         if (
             is_not_null
             and not has_default
@@ -1331,16 +1368,47 @@ class MigrationRiskAnalyzer:
         default_is_none = (
             isinstance(default_node, ast.Constant) and default_node.value is None
         )
-        nulls_fill_rows = null_val is True and (not has_default or default_is_none)
+        # When ``db_default=`` is present, Django's schema editor fills
+        # existing rows from it and ignores any Python ``default=``. Rows get
+        # NULL only with ``db_default=None``; any other value replaces the
+        # NULL fill.
+        db_default_node = _get_kwarg(field_call, "db_default")
+        has_db_default = db_default_node is not None
+        db_default_is_none = (
+            isinstance(db_default_node, ast.Constant) and db_default_node.value is None
+        )
+        if has_db_default:
+            nulls_fill_rows = _is_nullable(field_call, field_type) and db_default_is_none
+        else:
+            nulls_fill_rows = _is_nullable(field_call, field_type) and (
+                not has_default or default_is_none
+            )
         if unique_val is True and populated and not nulls_fill_rows:
             default_node = _get_kwarg(field_call, "default")
             # A callable default (e.g. ``default=uuid.uuid4``) can produce
             # unique values per row → medium. Anything else (literal or
             # missing) will fail on duplicates → high.
             default_is_callable = isinstance(default_node, (ast.Name, ast.Attribute))
-            if default_is_callable:
+            # A database expression in ``db_default=`` (e.g. ``RandomUUID()``)
+            # may be evaluated per row (PostgreSQL evaluates volatile
+            # defaults for each existing row), so it is uncertain rather than
+            # a certain collision. A literal ``db_default=True`` still copies
+            # one value to every row and stays critical. When adding the
+            # column, Django's schema editor uses ``db_default`` and ignores
+            # any Python ``default=``, so the Python default does not matter
+            # here.
+            db_default_is_expression = isinstance(db_default_node, ast.Call)
+            if db_default_is_expression:
                 confidence: Confidence = "medium"
                 severity: Severity = "warning"
+                desc = (
+                    f"Adds UNIQUE column '{name}' to '{model}' with a database "
+                    f"expression as db_default; verify it produces unique "
+                    f"values per row."
+                )
+            elif default_is_callable and not has_db_default:
+                confidence = "medium"
+                severity = "warning"
                 desc = (
                     f"Adds UNIQUE column '{name}' to '{model}' with a callable "
                     f"default; verify it produces unique values per row."
@@ -1836,9 +1904,12 @@ def analyze_migration_risks(
         # itself is Django's: dependencies first, the numeric prefix only
         # breaks ties.
         trees: list[tuple[Path, ast.Module]] = []
+        unreadable = False
         for path in candidates:
             tree = _read_migration_tree(path)
-            if tree is not None and _find_migration_class(tree) is not None:
+            if tree is None:
+                unreadable = True
+            elif _find_migration_class(tree) is not None:
                 trees.append((path, tree))
         has_configured_label = app_label in configured_labels
         ordered = _replay_order(trees, app_label=app_label, infer_label=not has_configured_label)
@@ -1885,13 +1956,14 @@ def analyze_migration_risks(
             # Same reasoning when a migration computes its `dependencies`
             # (`dependencies = get_dependencies()`): we read them as `[]`, so
             # its parent looks like a leaf. We cannot tell the graph's shape,
-            # so stay silent for the app.
+            # so stay silent for the app. A file that does not parse (e.g.
+            # Python 3.14 syntax on an older interpreter) leaves the same hole.
             effective_label = (
                 app_label
                 if has_configured_label
                 else _resolve_app_label({m["name"]: m["dependencies"] for m in parsed}, app_label)
             )
-            deps_unknown = any(m.get("dependencies_unknown") for m in parsed)
+            deps_unknown = unreadable or any(m.get("dependencies_unknown") for m in parsed)
             leaves = (
                 _compute_roots_leaves_cross(
                     _collapse_squashed(parsed, effective_label), effective_label

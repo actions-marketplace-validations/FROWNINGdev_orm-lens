@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **migration-risk: `NullBooleanField` is nullable without `null=True`**
+  ([#338](https://github.com/FROWNINGdev/orm-lens/issues/338)).
+  `NullBooleanField.__init__` sets `null=True` itself, so migrations never
+  write the keyword, and `AddField(field=models.NullBooleanField())` was
+  reported as a critical NOT NULL column. Nullability is now decided by one
+  helper that knows this field, also for the unique-column rule, where a
+  `NullBooleanField(unique=True)` fills existing rows with NULL and is safe.
+
+- **migration-risk: `auto_now` on a date field subclass has a default**
+  ([#339](https://github.com/FROWNINGdev/orm-lens/issues/339)).
+  `AddField` with django-extensions' `ModificationDateTimeField(auto_now=True)`
+  or `CreationDateTimeField(auto_now_add=True)` was reported as a critical
+  NOT NULL column without a default. Django fills existing rows with the
+  current time for these, as it does for `DateTimeField`. Any field whose name
+  ends in `DateField`, `DateTimeField` or `TimeField` now counts.
+
+- **migration-risk: a migration that does not parse no longer causes a leaf conflict**
+  ([#337](https://github.com/FROWNINGdev/orm-lens/issues/337)).
+  A file `ast.parse` rejects (for example Python 3.14's unparenthesised
+  `except A, B:` read on an older interpreter) dropped out of the graph, so its
+  parent looked like a second leaf and `conflicting_migration_leaves` reported
+  a critical conflict. The app's graph is now treated as unknown, as for
+  computed `dependencies`, and the leaf check stays silent for that app.
+
+- **parser: `TimeStampedModel` subclasses keep `created` and `modified`**
+  ([#336](https://github.com/FROWNINGdev/orm-lens/issues/336)).
+  django-extensions and django-model-utils both define an abstract
+  `TimeStampedModel` with these two fields, but it lives in site-packages, so
+  every subclass lost them and `drift` reported both as "migrated but no
+  longer declared". They now come from the same table as the
+  `django.contrib.auth` bases; a workspace class of that name still wins.
+
+- **parser: resolve a base bound by `get_model("app", "Model")`**
+  ([#341](https://github.com/FROWNINGdev/orm-lens/issues/341)).
+  django-oscar binds `Benefit = get_model("offer", "Benefit")` in
+  `offer/benefits.py`, subclasses it there, and star-imports that module from
+  `offer/models.py`. The scan now reads modules a models file star-imports and
+  resolves a `get_model` binding with string arguments to the workspace model
+  with that app label (`AppConfig.label` when set) and name. On django-oscar,
+  the 12 benefit and condition proxies are found and their stale-table lines
+  leave `drift`.
+
+- **signals: "fires for all models" only on model signals**
+  ([#340](https://github.com/FROWNINGdev/orm-lens/issues/340)).
+  A receiver without `sender=` got the note `no sender = fires for all models`
+  whatever the signal was, including `user_logged_in`, `pre_migrate` and
+  project signals, which models never send. The note now appears only for
+  `pre_init`, `post_init`, `pre_save`, `post_save`, `pre_delete`,
+  `post_delete` and `m2m_changed`; the sender still shows as `<any>`.
+
+- **parser: keep a model whose base list holds a call**
+  ([#335](https://github.com/FROWNINGdev/orm-lens/issues/335)).
+  `class Comment(ExportModelOperationsMixin("comment"), models.Model)` was
+  dropped because the class-header regex only reads bases up to the first
+  `)`. Calls in the base list are now stripped before matching, so the other
+  bases still decide whether the class is a model; a call as the only base
+  is still not a model. Python and TypeScript parsers.
+
 ## [py-1.18.2] - 2026-11-22
 
 > Drift understands MPTT, parent links and hand-written migrations.

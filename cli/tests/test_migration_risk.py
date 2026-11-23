@@ -142,6 +142,112 @@ class AddFieldNotNullTest(unittest.TestCase):
                 "add_field_not_null_no_default", _by_rule(findings)
             )
 
+    def _add_field_findings(self, field_src: str) -> dict[str, list[MigrationRisk]]:
+        """Run the analyzer on 0001 (create Build) + 0002 (AddField ``field_src``)."""
+        with TemporaryDirectory() as tmp:
+            app = Path(tmp) / "builds"
+            _write(
+                app, "0001_initial",
+                "from django.db import migrations, models\n"
+                "class Migration(migrations.Migration):\n"
+                "    dependencies = []\n"
+                "    operations = [migrations.CreateModel(name='Build', fields=[])]\n",
+            )
+            _write(
+                app, "0002_build_cold_storage",
+                "import django.db.models\n"
+                "from django.db import migrations, models\n"
+                "class Migration(migrations.Migration):\n"
+                "    dependencies = [('builds', '0001_initial')]\n"
+                "    operations = [migrations.AddField(model_name='build',\n"
+                f"        name='cold_storage', field={field_src})]\n",
+            )
+            return _by_rule(analyze_migration_risks(tmp, current_schema=_empty_schema()))
+
+    def test_negative_null_boolean_field_is_nullable_by_definition(self) -> None:
+        """#338: NullBooleanField sets null=True itself; migrations never write it."""
+        rules = self._add_field_findings(
+            "models.NullBooleanField(help_text='Build steps stored outside the database.')"
+        )
+        self.assertNotIn("add_field_not_null_no_default", rules)
+
+    def test_negative_null_boolean_field_dotted_path(self) -> None:
+        rules = self._add_field_findings("django.db.models.NullBooleanField()")
+        self.assertNotIn("add_field_not_null_no_default", rules)
+
+    def test_positive_boolean_field_without_default_still_flagged(self) -> None:
+        rules = self._add_field_findings("models.BooleanField()")
+        self.assertIn("add_field_not_null_no_default", rules)
+
+    def test_negative_unique_null_boolean_field_fills_rows_with_null(self) -> None:
+        """NULLs never collide in a unique constraint, same as unique=True, null=True."""
+        rules = self._add_field_findings("models.NullBooleanField(unique=True)")
+        self.assertNotIn("add_field_unique_no_row_default", rules)
+        self.assertNotIn("add_field_not_null_no_default", rules)
+
+    def test_positive_unique_nullable_with_db_default_still_flagged(self) -> None:
+        """db_default fills existing rows with one value, not NULL, so they collide."""
+        for field_src in (
+            "models.NullBooleanField(unique=True, db_default=True)",
+            "models.BooleanField(null=True, unique=True, db_default=True)",
+        ):
+            with self.subTest(field_src=field_src):
+                rules = self._add_field_findings(field_src)
+                self.assertIn("add_field_unique_no_row_default", rules)
+
+    def test_unique_nullable_with_db_default_expression_is_uncertain(self) -> None:
+        """A database expression may be evaluated per row (e.g. RandomUUID()),
+        so it is a medium warning, not a certain critical collision."""
+        rules = self._add_field_findings(
+            "models.UUIDField(null=True, unique=True, db_default=RandomUUID())"
+        )
+        unique = rules.get("add_field_unique_no_row_default", [])
+        self.assertEqual(len(unique), 1)
+        self.assertEqual(unique[0].confidence, "medium")
+        self.assertEqual(unique[0].severity, "warning")
+
+    def test_db_default_expression_wins_over_python_default(self) -> None:
+        """ADD COLUMN uses db_default and ignores the Python default, so a
+        literal default= must not turn RandomUUID() into a critical finding."""
+        rules = self._add_field_findings(
+            "models.UUIDField(null=True, unique=True, "
+            "default='00000000-0000-0000-0000-000000000001', "
+            "db_default=RandomUUID())"
+        )
+        unique = rules.get("add_field_unique_no_row_default", [])
+        self.assertEqual(len(unique), 1)
+        self.assertEqual(unique[0].confidence, "medium")
+        self.assertEqual(unique[0].severity, "warning")
+
+    def test_negative_unique_nullable_with_db_default_none(self) -> None:
+        """db_default=None still fills existing rows with NULL."""
+        rules = self._add_field_findings(
+            "models.BooleanField(null=True, unique=True, db_default=None)"
+        )
+        self.assertNotIn("add_field_unique_no_row_default", rules)
+
+    def test_literal_db_default_stays_critical_with_callable_default(self) -> None:
+        """ADD COLUMN ignores the Python callable when db_default is set, so a
+        literal db_default=True still copies one value to every row."""
+        rules = self._add_field_findings(
+            "models.BooleanField(null=True, unique=True, default=bool, db_default=True)"
+        )
+        unique = rules.get("add_field_unique_no_row_default", [])
+        self.assertEqual(len(unique), 1)
+        self.assertEqual(unique[0].severity, "critical")
+
+    def test_negative_db_default_none_overrides_python_default(self) -> None:
+        """db_default=None wins over default=True: existing rows get NULL."""
+        rules = self._add_field_findings(
+            "models.BooleanField(null=True, unique=True, default=True, db_default=None)"
+        )
+        self.assertNotIn("add_field_unique_no_row_default", rules)
+
+    def test_negative_non_literal_null_is_not_called_not_null(self) -> None:
+        """null=ALLOW_NULL cannot be resolved statically, so no NOT NULL claim."""
+        rules = self._add_field_findings("models.BooleanField(null=ALLOW_NULL)")
+        self.assertNotIn("add_field_not_null_no_default", rules)
+
     def test_negative_initial_migration_is_safe(self) -> None:
         """Rule 1 only fires when the table is already populated
         (heuristic: not the first migration in its app)."""
@@ -848,6 +954,8 @@ class RealWorldPrecisionTest(unittest.TestCase):
             "LowercaseSlugField(blank=True)",
             "models.DateTimeField(auto_now_add=True)",
             "models.DateField(auto_now=True)",
+            "django_extensions.db.fields.ModificationDateTimeField(auto_now=True, verbose_name='modified')",
+            "django_extensions.db.fields.CreationDateTimeField(auto_now_add=True)",
             "models.IntegerField(db_default=0)",
         ):
             self.assertNotIn("add_field_not_null_no_default", self._rules(self._add(field)), field)
@@ -856,6 +964,8 @@ class RealWorldPrecisionTest(unittest.TestCase):
         for field in (
             "models.CharField(max_length=50)",
             "models.IntegerField(blank=True)",  # no empty string for integers
+            "django_extensions.db.fields.ModificationDateTimeField()",  # no auto_now
+            "models.IntegerField(auto_now=True)",  # auto_now only fills date fields
             "models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='orders.order')",
         ):
             rules = self._rules(self._add(field))

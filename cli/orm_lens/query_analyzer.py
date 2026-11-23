@@ -1773,6 +1773,27 @@ def _walk_for_accesses(
                     for argument in (*call.args, *call.keywords):
                         _walk_for_accesses(argument, loop_var, hits)
                 return
+        if (
+            method_name == "get"
+            and isinstance(node.func, ast.Attribute)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            # dict.get("key"): QuerySet.get() takes lookups as keywords or Q
+            # objects, never a string positionally, so `task.task.get("func")`
+            # reads a JSON or dict attribute, not a relation. What is read is
+            # the receiver up to that attribute: nothing more for `task.task`,
+            # the `product.category` relation for
+            # `item.product.category.metadata.get(...)`. Walking the whole
+            # receiver would record the dict attribute itself as an access.
+            # The arguments can still read a relation.
+            receiver = node.func.value
+            if isinstance(receiver, ast.Attribute):
+                _walk_for_accesses(receiver.value, loop_var, hits)
+            for argument in (*node.args, *node.keywords):
+                _walk_for_accesses(argument, loop_var, hits)
+            return
         if method_name in _MANAGER_METHODS and isinstance(node.func, ast.Attribute):
             calls = _collect_call_chain_methods(node)
             first_func = calls[0][1].func

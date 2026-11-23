@@ -255,6 +255,45 @@ def test_related_manager_writes_are_not_reads(tmp_path: Path) -> None:
     assert scan_for_nplusone(str(tmp_path), SCHEMA) == []
 
 
+def test_dict_get_with_a_string_key_is_not_a_manager_call(tmp_path: Path) -> None:
+    # InvenTree tasks.py: `task.task.get("func")` on django-q's dict field
+    # was reported high-confidence with a prefetch that fails at runtime.
+    _write(
+        tmp_path / "tasks.py",
+        "from django_q.models import OrmQ\n"
+        "\n"
+        "\n"
+        "def find_task(taskname):\n"
+        "    for task in OrmQ.objects.all().order_by('-id'):\n"
+        "        if task.task.get('func') == taskname:\n"
+        "            return task\n",
+    )
+    assert scan_for_nplusone(str(tmp_path), SCHEMA) == []
+    assert scan_for_nplusone(str(tmp_path), None) == []
+
+
+def test_manager_get_with_lookups_is_still_flagged(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "views.py",
+        "def first_tags():\n"
+        "    for post in Post.objects.all():\n"
+        "        print(post.tags.get(pk=1))\n",
+    )
+    (finding,) = scan_for_nplusone(str(tmp_path), SCHEMA)
+    assert finding.suggested_fix == '.prefetch_related("tags")'
+
+
+def test_relation_read_inside_dict_get_arguments_is_still_flagged(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "views.py",
+        "def labels():\n"
+        "    for post in Post.objects.all():\n"
+        "        print(post.meta.get('k', post.author.name))\n",
+    )
+    (finding,) = scan_for_nplusone(str(tmp_path), SCHEMA)
+    assert finding.suggested_fix == '.select_related("author")'
+
+
 def test_write_after_loading_a_single_valued_relation_is_still_flagged(tmp_path: Path) -> None:
     # Healthchecks: `profile.user.delete()` loads profile.user first. The fix
     # is select_related, and only select_related.

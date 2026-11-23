@@ -75,6 +75,70 @@ class SignalGraphTest(unittest.TestCase):
             self.assertIsNone(edge["sender"])
             self.assertEqual(edge["note"], "no sender = fires for all models")
 
+    def test_no_sender_note_only_on_model_signals(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _copy_miniapp(root)
+            _write(
+                root / "accounts" / "signals.py",
+                "from django.contrib.auth.signals import user_logged_in\n"
+                "from django.db.models import signals\n"
+                "from django.db.models.signals import pre_migrate\n"
+                "from django.dispatch import Signal, receiver\n\n"
+                "product_viewed = Signal()\n\n"
+                "@receiver(user_logged_in)\n"
+                "def remember_login(sender, request, user, **kwargs):\n"
+                "    pass\n\n"
+                "@receiver(pre_migrate)\n"
+                "def before_migrate(sender, **kwargs):\n"
+                "    pass\n\n"
+                "@receiver(product_viewed)\n"
+                "def count_view(sender, **kwargs):\n"
+                "    pass\n\n"
+                "@receiver(signals.post_save)\n"
+                "def audit_every_save(sender, instance, **kwargs):\n"
+                "    pass\n",
+            )
+
+            edges = signal_graph(str(root))["edges"]
+
+            notes = {e["handler"].rsplit(".", 1)[-1]: e.get("note") for e in edges}
+            self.assertEqual(
+                notes,
+                {
+                    "remember_login": None,
+                    "before_migrate": None,
+                    "count_view": None,
+                    "audit_every_save": "no sender = fires for all models",
+                },
+            )
+            self.assertTrue(all(e["sender"] is None for e in edges))
+
+    def test_no_sender_note_kept_for_an_aliased_model_signal(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _copy_miniapp(root)
+            _write(
+                root / "accounts" / "signals.py",
+                "from django.db.models.signals import post_save as saved\n"
+                "from django.db.models.signals import pre_migrate as migrating\n"
+                "from django.dispatch import receiver\n\n"
+                "@receiver(saved)\n"
+                "def audit_every_save(sender, instance, **kwargs):\n"
+                "    pass\n\n"
+                "@receiver(migrating)\n"
+                "def before_migrate(sender, **kwargs):\n"
+                "    pass\n",
+            )
+
+            edges = signal_graph(str(root))["edges"]
+
+            notes = {e["handler"].rsplit(".", 1)[-1]: e.get("note") for e in edges}
+            self.assertEqual(
+                notes,
+                {"audit_every_save": "no sender = fires for all models", "before_migrate": None},
+            )
+
     def test_orphan_handler_when_sender_missing_from_workspace(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

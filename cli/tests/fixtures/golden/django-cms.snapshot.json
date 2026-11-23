@@ -5,6 +5,124 @@
         {
           "appName": "cms",
           "baseClasses": [
+            "MP_Node"
+          ],
+          "fields": [
+            {
+              "args": "\"self\",\n        on_delete=models.CASCADE,\n        blank=True,\n        null=True,\n        related_name=\"children\",\n        db_index=True,",
+              "isRelation": true,
+              "lineNumber": 58,
+              "name": "parent",
+              "onDelete": "CASCADE",
+              "relatedModel": "self",
+              "relatedName": "children",
+              "relationKind": "ForeignKey",
+              "type": "ForeignKey"
+            },
+            {
+              "args": "Site,\n        on_delete=models.CASCADE,\n        verbose_name=_(\"site\"),\n        related_name=\"djangocms_pages\",\n        db_index=True,",
+              "isRelation": true,
+              "lineNumber": 66,
+              "name": "site",
+              "onDelete": "CASCADE",
+              "relatedModel": "Site",
+              "relatedName": "djangocms_pages",
+              "relationKind": "ForeignKey",
+              "type": "ForeignKey"
+            },
+            {
+              "args": "_(\"created by\"),\n        max_length=constants.PAGE_USERNAME_MAX_LENGTH,\n        editable=False,",
+              "isRelation": false,
+              "lineNumber": 73,
+              "name": "created_by",
+              "type": "CharField"
+            },
+            {
+              "args": "_(\"changed by\"),\n        max_length=constants.PAGE_USERNAME_MAX_LENGTH,\n        editable=False,",
+              "isRelation": false,
+              "lineNumber": 78,
+              "name": "changed_by",
+              "type": "CharField"
+            },
+            {
+              "args": "auto_now_add=True",
+              "isRelation": false,
+              "lineNumber": 83,
+              "name": "creation_date",
+              "type": "DateTimeField"
+            },
+            {
+              "args": "auto_now=True",
+              "isRelation": false,
+              "lineNumber": 84,
+              "name": "changed_date",
+              "type": "DateTimeField"
+            },
+            {
+              "args": "_(\"id\"),\n        max_length=40,\n        db_index=True,\n        blank=True,\n        null=True,\n        help_text=_(\"A unique identifier that is used with the page_url templatetag for linking to this page\"),",
+              "isRelation": false,
+              "lineNumber": 90,
+              "name": "reverse_id",
+              "type": "CharField"
+            },
+            {
+              "args": "_(\"attached menu\"),\n        max_length=80,\n        db_index=True,\n        blank=True,\n        null=True,",
+              "isRelation": false,
+              "lineNumber": 98,
+              "name": "navigation_extenders",
+              "type": "CharField"
+            },
+            {
+              "args": "_(\"login required\"),\n        default=False,",
+              "isRelation": false,
+              "lineNumber": 105,
+              "name": "login_required",
+              "type": "BooleanField"
+            },
+            {
+              "args": "editable=False,\n        db_index=True,\n        default=False,",
+              "isRelation": false,
+              "lineNumber": 109,
+              "name": "is_home",
+              "type": "BooleanField"
+            },
+            {
+              "args": "_(\"application\"),\n        max_length=200,\n        blank=True,\n        null=True,\n        db_index=True,",
+              "isRelation": false,
+              "lineNumber": 114,
+              "name": "application_urls",
+              "type": "CharField"
+            },
+            {
+              "args": "_(\"application instance name\"),\n        max_length=200,\n        blank=True,\n        null=True,",
+              "isRelation": false,
+              "lineNumber": 121,
+              "name": "application_namespace",
+              "type": "CharField"
+            },
+            {
+              "args": "default=False,\n        help_text=_(\"Mark this page as a page type\"),",
+              "isRelation": false,
+              "lineNumber": 127,
+              "name": "is_page_type",
+              "type": "BooleanField"
+            }
+          ],
+          "filePath": "cms/models/pagemodel.py",
+          "lineNumber": 47,
+          "meta": {
+            "app_label": "\"cms\"",
+            "default_permissions": "[\"add\", \"change\", \"delete\"]",
+            "ordering": "[\"path\"]",
+            "permissions": "[ (\"view_page\", \"Can view page\"), (\"publish_page\", \"Can publish page\"), (\"edit_static_placeholder\", \"Can edit static placeholders\"), ]",
+            "verbose_name": "_(\"page\")",
+            "verbose_name_plural": "_(\"pages\")"
+          },
+          "name": "Page"
+        },
+        {
+          "appName": "cms",
+          "baseClasses": [
             "models.Model"
           ],
           "fields": [
@@ -56,6 +174,20 @@
             "default_permissions": "[]"
           },
           "name": "PageUrl"
+        },
+        {
+          "appName": "cms",
+          "baseClasses": [
+            "Page"
+          ],
+          "fields": [],
+          "filePath": "cms/models/pagemodel.py",
+          "lineNumber": 1148,
+          "meta": {
+            "default_permissions": "[]",
+            "proxy": "True"
+          },
+          "name": "PageType"
         },
         {
           "appName": "cms",

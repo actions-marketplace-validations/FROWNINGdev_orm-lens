@@ -28,7 +28,53 @@ def _init_py(app_dir: Path) -> None:
     (app_dir / "migrations" / "__init__.py").write_text("", encoding="utf-8")
 
 
+def _labelled_threads_app(root: Path) -> None:
+    """``threads/`` whose AppConfig sets ``label = "forum_threads"`` (#327)."""
+    app_dir = root / "threads"
+    (app_dir).mkdir(parents=True, exist_ok=True)
+    (app_dir / "apps.py").write_text(
+        "from django.apps import AppConfig\n\n\n"
+        "class ThreadsConfig(AppConfig):\n"
+        "    name = \"threads\"\n"
+        "    label = \"forum_threads\"\n",
+        encoding="utf-8",
+    )
+    _write_migration(
+        app_dir,
+        "0001_initial",
+        "from django.db import migrations, models\n\n"
+        "class Migration(migrations.Migration):\n"
+        "    initial = True\n"
+        "    dependencies = []\n"
+        "    operations = [migrations.CreateModel(name='Thread', fields=[])]\n",
+    )
+    _write_migration(
+        app_dir,
+        "0002_thread_pinned",
+        "from django.db import migrations, models\n\n"
+        "class Migration(migrations.Migration):\n"
+        "    dependencies = [('forum_threads', '0001_initial')]\n"
+        "    operations = [migrations.AddField(model_name='thread', name='pinned', "
+        "field=models.BooleanField(default=False))]\n",
+    )
+    _init_py(app_dir)
+
+
 class DescribeMigrationDependencyTest(unittest.TestCase):
+    def test_app_label_from_apps_py_links_its_own_migrations(self) -> None:
+        for asked in ("threads", "forum_threads"):
+            with self.subTest(asked=asked), TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                _labelled_threads_app(root)
+
+                result = describe_migration_dependency(asked, str(root))
+
+                self.assertNotIn("error", result)
+                self.assertEqual(result["app_label"], asked)
+                self.assertEqual(result["roots"], ["0001_initial"])
+                self.assertEqual(result["leaves"], ["0002_thread_pinned"])
+                self.assertEqual(result["cross_app_deps"], [])
+
     def test_simple_chain_roots_and_leaves(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -70,6 +70,11 @@ CLASS_START_RE = re.compile(
     r"^class\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*\[[^\]]*\])?\s*\("
 )
 
+# A call in a base list, e.g. ``ExportModelOperationsMixin("recipe")`` — its
+# result can't be resolved statically, so ``_read_multiline_class`` drops the
+# call and keeps the other bases (issue #335).
+_CALL_IN_BASES_RE = re.compile(r"[A-Za-z_][\w.]*\s*\([^()]*\)")
+
 NON_MODEL_TAIL = re.compile(
     r"^(ModelAdmin|ModelForm|ModelSerializer|ModelChoiceField|"
     r"ModelMultipleChoiceField|Serializer|Form|Admin|View|ViewSet|"
@@ -142,7 +147,17 @@ def _read_multiline_class(lines: Sequence[str], start: int):
         if i > start:
             buffer += " " + src
         if saw_open and depth == 0:
-            m = CLASS_RE.match(buffer)
+            head, _paren, rest = buffer.partition("(")
+            while True:
+                # ``Mixin("label")`` in a base list is a call whose result
+                # can't be resolved statically; drop it, keep the other bases.
+                # The loop strips nested calls from the inside out, so
+                # ``Mixin(get_label("x"))`` is dropped in two passes.
+                stripped = _CALL_IN_BASES_RE.sub("", rest)
+                if stripped == rest:
+                    break
+                rest = stripped
+            m = CLASS_RE.match(head + "(" + rest)
             if m:
                 return m, i
             return None, i
@@ -1329,6 +1344,13 @@ _MODEL_ROOT_TAIL = re.compile(
     r"|PolymorphicModel|MPTTModel)$"
 )
 _DJANGO_MODEL_MODULE = re.compile(r"^django\.db\.models(\.base)?$")
+_THIRD_PARTY_MODEL_ROOTS: dict[str, tuple[str, ...]] = {
+    "solo.models": ("SingletonModel",),
+    "tree_queries.models": ("TreeNode",),
+    "treebeard.mp_tree": ("MP_Node",),
+    "treebeard.ns_tree": ("NS_Node",),
+    "treebeard.al_tree": ("AL_Node",),
+}
 
 
 def _has_model_ancestry(
@@ -1445,8 +1467,14 @@ _PERMISSIONS_MIXIN = (
 
 # Fields of django.contrib.auth's abstract bases, which live in site-packages
 # where a workspace scan never looks. ``is_active`` on AbstractBaseUser is a
-# plain class attribute, not a field. A workspace class of the same name wins.
+# plain class attribute, not a field. ``TimeStampedModel`` declares
+# ``created`` and ``modified`` in both django-extensions and django-model-utils.
+# A workspace class of the same name wins.
 DJANGO_ABSTRACT_BASES: dict[str, tuple[ParsedField, ...]] = {
+    "TimeStampedModel": (
+        _django_field("created", "DateTimeField", "auto_now_add=True", "TimeStampedModel"),
+        _django_field("modified", "DateTimeField", "auto_now=True", "TimeStampedModel"),
+    ),
     "AbstractBaseUser": _ABSTRACT_BASE_USER,
     "PermissionsMixin": _PERMISSIONS_MIXIN,
     "AbstractUser": (
@@ -1690,6 +1718,17 @@ _FROM_IMPORT_RE = re.compile(
     re.M,
 )
 _IMPORT_RE = re.compile(r"^[ \t]*import[ \t]+([^\n]+)", re.M)
+_STAR_IMPORT_RE = re.compile(
+    r"^[ \t]*from[ \t]+(\.+[\w.]*|[\w.]+)[ \t]+import[ \t]+\*", re.M
+)
+#: ``Benefit = get_model("offer", "Benefit")`` at module level, through
+#: ``get_model`` or any ``<name>.get_model`` (``apps``, oscar's ``loading``).
+#: Only string-constant arguments name a model the scan can find.
+_GET_MODEL_RE = re.compile(
+    r"^(\w+)[ \t]*=[ \t]*(?:[\w.]+\.)?get_model\(\s*"
+    r"""(["'])(\w+)\2\s*,\s*(["'])(\w+)\4\s*,?\s*\)""",
+    re.M,
+)
 
 #: How many re-exports a base may sit behind (``core/db/__init__.py`` doing
 #: ``from .bases import SoftDeletable`` is one). Bounds a malformed import
@@ -1765,6 +1804,8 @@ class _ModuleEntry:
     defs: dict[str, ParsedModel]
     imports: dict[str, tuple[str, str | None]]
     non_models: frozenset[str]
+    model_refs: dict[str, tuple[str, str]] = dataclass_field(default_factory=dict)
+    """Names bound by ``get_model``, to ``(app_label, lowercased model name)``."""
 
 
 class _WorkspaceResolver:
@@ -1792,6 +1833,22 @@ class _WorkspaceResolver:
             tuple[Path, str], tuple[bool, ParsedModel | None]
         ] = {}
         self._model_roots: dict[tuple[Path, str], tuple[str, str] | None] = {}
+        self.models_by_label: dict[tuple[str, str], ParsedModel] = {}
+
+    def index_models(self, models: Sequence[ParsedModel]) -> None:
+        """Index concrete classes by ``(app_label, lowercased name)``.
+
+        This is what a ``get_model("offer", "Benefit")`` binding resolves
+        against. Indexing more models drops the cached lookups, which may
+        have resolved against the smaller index.
+        """
+        labels = _configured_app_labels(models)
+        for model in models:
+            if not _is_abstract(model):
+                key = (_effective_app_label(model, labels), model.name.lower())
+                self.models_by_label.setdefault(key, model)
+        self._lookups.clear()
+        self._model_roots.clear()
 
     def _resolved(self, path: Path) -> Path:
         """``path.resolve()`` once per path for the lifetime of the scan."""
@@ -1831,7 +1888,13 @@ class _WorkspaceResolver:
                     defs.setdefault(d.name, d)
         except Exception:
             return None
-        entry = _ModuleEntry(defs, _parse_imports(content), frozenset(non_models))
+        model_refs = {
+            m.group(1): (m.group(3), m.group(5).lower())
+            for m in _GET_MODEL_RE.finditer(content)
+        }
+        entry = _ModuleEntry(
+            defs, _parse_imports(content), frozenset(non_models), model_refs
+        )
         self.loaded[path] = entry
         return entry
 
@@ -1854,6 +1917,9 @@ class _WorkspaceResolver:
                 return True, defs[name]
             if name in non_models:
                 return True, None
+            if name in entry.model_refs:
+                model = self.models_by_label.get(entry.model_refs[name])
+                return model is not None, model
             target = imports.get(name)
             if target is None or target[1] is None:
                 return False, None
@@ -1948,6 +2014,8 @@ class _WorkspaceResolver:
             or module in ("model_utils.models", "polymorphic.models", "mptt.models")
         ):
             return module, target_name
+        if target_name in _THIRD_PARTY_MODEL_ROOTS.get(module, ()):
+            return module, target_name
 
         for candidate in _module_files(module, str(path), self.root):
             root = self._model_root(candidate, target_name, hops + 1)
@@ -2010,6 +2078,45 @@ def _pull_imported_bases(
         known_defs.add(key)
         pulled.append(found)
         queue.extend((norm(found.file_path), b) for b in found.base_classes)
+    return pulled
+
+
+def _star_imports(file_path: str, content: str) -> list[tuple[str, str]]:
+    """``(file, module)`` for each ``from <module> import *`` outside a string."""
+    in_string = _lines_inside_strings(content.splitlines())
+    return [
+        (file_path, m.group(1))
+        for m in _STAR_IMPORT_RE.finditer(content)
+        if content.count("\n", 0, m.start()) not in in_string
+    ]
+
+
+def _pull_star_imported_defs(
+    star_imports: Iterable[tuple[str, str]],
+    known: Iterable[ParsedModel],
+    resolver: _WorkspaceResolver,
+) -> list[ParsedModel]:
+    """Classes of the modules a models file star-imports.
+
+    Loading ``offer/models.py`` runs ``from offer.benefits import *``, so
+    Django also registers every model ``benefits.py`` defines, whatever its
+    ``__all__`` says; django-oscar keeps its benefit and condition proxies
+    there (#341). ``star_imports`` holds ``(models file, module)`` pairs; the
+    first workspace file the module resolves to is read, as in a lookup.
+    """
+    known_defs = {(resolver._resolved(Path(m.file_path)), m.name) for m in known}
+    pulled: list[ParsedModel] = []
+    for from_file, module in star_imports:
+        for candidate in _module_files(module, from_file, resolver.root):
+            entry = resolver.load(candidate)
+            if entry is None:
+                continue
+            for found in entry.defs.values():
+                key = (resolver._resolved(Path(found.file_path)), found.name)
+                if key not in known_defs:
+                    known_defs.add(key)
+                    pulled.append(found)
+            break
     return pulled
 
 
@@ -2175,6 +2282,7 @@ def scan_workspace(
     """
     root_path = Path(root).resolve()
     all_defs: list[ParsedModel] = []
+    star_imports: list[tuple[str, str]] = []
     scanned_files = 0
     for py in _iter_python_files(root_path, exclude_globs):
         scanned_files += 1
@@ -2192,10 +2300,15 @@ def scan_workspace(
                 file=sys.stderr,
             )
             continue
+        star_imports.extend(_star_imports(str(py), content))
     resolver = _WorkspaceResolver(root_path, exclude_globs)
+    all_defs.extend(_pull_star_imported_defs(star_imports, all_defs, resolver))
+    resolver.index_models(all_defs)
     all_defs.extend(
         _pull_imported_bases(all_defs, root_path, exclude_globs, resolver)
     )
+    # A base found through an ordinary import can be a get_model target.
+    resolver.index_models(all_defs)
 
     found = _resolve_and_filter(all_defs, resolver)
     _attach_implicit_parent_links(found, resolver)

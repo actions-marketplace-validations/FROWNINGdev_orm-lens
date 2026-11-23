@@ -279,6 +279,35 @@ class MigrationConflictTests(unittest.TestCase):
         )
         self.assertEqual(_conflicts(root), [])
 
+    def test_unparseable_migration_is_not_a_conflict(self) -> None:
+        """A migration `ast.parse` rejects drops out of the graph.
+
+        Its parent then had no child, so a linear history got a critical
+        conflict between the parent and the real leaf. Python 3.14's
+        unparenthesised `except A, B:` is enough on an older interpreter.
+        """
+        root = _project(
+            [
+                ("0001_initial.py", "[]"),
+                ("0003_index.py", "[('shop', '0002_move_data')]"),
+                ("0004_private.py", "[('shop', '0003_index')]"),
+            ]
+        )
+        (Path(root) / "shop" / "migrations" / "0002_move_data.py").write_text(
+            "from django.db import migrations\n\n\ndef broken(:\n    pass\n",
+            encoding="utf-8",
+        )
+        _write_migrations(
+            Path(root) / "billing",
+            [
+                ("0001_initial.py", "[]"),
+                ("0002_alice.py", "[('billing', '0001_initial')]"),
+                ("0002_bob.py", "[('billing', '0001_initial')]"),
+            ],
+        )
+        # Only the app with the unreadable file goes quiet.
+        self.assertEqual({r.app for r in _conflicts(root)}, {"billing"})
+
     def test_annotated_computed_dependencies_are_not_a_conflict(self) -> None:
         """`dependencies: list = get_dependencies()` after `dependencies = []`.
 
