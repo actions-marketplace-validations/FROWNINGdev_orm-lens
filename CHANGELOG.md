@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [py-1.18.4] - 2026-11-24
+
+> Pre-commit checks only new migrations; ER shows abstract-base fields.
+
 ### Added
 
 - **migration-risk: report only the migrations you pass**
@@ -18,6 +22,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ran can adopt it: on django-oscar the hook failed on every commit with 29
   critical findings from 2014, and now reports only what you stage.
   `only-changed: true` in the GitHub Action works for `migration-risk` too.
+
+### Fixed
+
+- **`--format github` and `--format sarif` name files from the checkout root
+  when `--path` is a subdirectory**
+  ([#358](https://github.com/FROWNINGdev/orm-lens/pull/358)).
+  With the Action's `path: backend`,
+  `nplusone` wrote `file=shop/views.py` for `backend/shop/views.py`, and an
+  absolute `--path` did the same for `migration-risk` and `blast-radius`, so
+  GitHub could not place the annotations on the PR diff. Files under the
+  working directory are now written relative to it.
+- **`er --format dbml|d2|plantuml|dot` point a relation at the right one of
+  two same-named models**
+  ([#357](https://github.com/FROWNINGdev/orm-lens/pull/357)).
+  When two apps define a model with the same name
+  (`basket.Line` and `order.Line`), these four formats drew every relation
+  to that name, `ForeignKey('order.Line')` and `'self'` included, to the app
+  scanned first. They now pick the model the way Mermaid has since #223: the
+  app named in the reference, else the field's own app, else the first app.
+- **`er --format d2|plantuml|dot` draw SQLAlchemy keys like DBML does**
+  ([#356](https://github.com/FROWNINGdev/orm-lens/pull/356)).
+  For a SQLAlchemy table these three formats marked only the first column of
+  a composite primary key, and drew each foreign key column as a
+  `ForeignKey` row with no type. A table whose primary key is also a foreign
+  key (an `OrderLine` keyed by `order_id, tenant_id`) had no primary key at
+  all in D2 and DOT, and PlantUML listed `order_id` twice. They now draw
+  every primary key column and keep the column type of a foreign key, as
+  DBML has since #210.
+- **ER diagrams, `scan` and hover cards show fields from abstract bases**
+  ([#354](https://github.com/FROWNINGdev/orm-lens/pull/354)).
+  They used to draw only what a class body declares, so on django-oscar 87
+  of 98 models showed 0 fields, and the ER diagram had 4 relations instead
+  of 117. Wagtail went from 52 to 138. Every output that describes the table
+  (`scan -f table|markdown`, `er` in all five formats, the extension's ER
+  view and hover) now includes the columns and relations an abstract base
+  contributes. The JSON `fields` list and the sidebar tree still list only
+  declared fields. Mermaid labels also drop `as _` for `related_name="+"`,
+  which turns the reverse accessor off, and the `scan -f table` file column
+  is relative to the working directory instead of an absolute path.
+- **migration-risk reads positional operation arguments**
+  ([#359](https://github.com/FROWNINGdev/orm-lens/pull/359)).
+  A hand-written `migrations.AddField("item", "code", field)` lost
+  `add_field_not_null_no_default`, and `DeleteModel("Item")` lost
+  `delete_model_still_referenced`, both critical, because only keywords were
+  read. `AlterField`, `AddIndex`, `AddConstraint` and the other operations
+  had the same gap. Arguments now resolve by Django's declared order, the
+  same table `drift` has used since #303; an explicit keyword still wins.
+
+## [0.22.4] - 2026-11-24
+
+> ER view and hover cards show fields from abstract base models.
 
 ### Fixed
 

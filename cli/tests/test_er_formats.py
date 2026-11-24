@@ -353,6 +353,71 @@ class MermaidSameNameModelsTest(unittest.TestCase):
         self.assertEqual(entities, names)
 
 
+class SameNameModelEdgesAllFormatsTest(unittest.TestCase):
+    """DBML, D2, PlantUML and DOT point a relation at the right one of two
+    same-named models, as Mermaid does since #223."""
+
+    def setUp(self) -> None:
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        apps = {
+            "basket": (
+                "from django.db import models\n"
+                "class Line(models.Model):\n"
+                "    quantity = models.IntegerField()\n"
+                "class LineAttribute(models.Model):\n"
+                "    line = models.ForeignKey(Line, on_delete=models.CASCADE)\n"
+            ),
+            "order": (
+                "from django.db import models\n"
+                "class Line(models.Model):\n"
+                "    title = models.CharField(max_length=100)\n"
+                "    parent = models.ForeignKey('self', on_delete=models.CASCADE)\n"
+                "class Refund(models.Model):\n"
+                "    line = models.ForeignKey(Line, on_delete=models.CASCADE)\n"
+            ),
+            "checkout": (
+                "from django.db import models\n"
+                "class Receipt(models.Model):\n"
+                "    line = models.ForeignKey('order.Line', on_delete=models.PROTECT)\n"
+            ),
+        }
+        for label, models_py in apps.items():
+            app = Path(tmp.name) / label
+            app.mkdir()
+            (app / "__init__.py").write_text("", encoding="utf-8")
+            (app / "models.py").write_text(models_py, encoding="utf-8")
+        self.index = scan_workspace(tmp.name, DEFAULT_EXCLUDES)
+
+    def test_dbml(self) -> None:
+        dbml = build_dbml(self.index)
+        self.assertIn("Ref: basket.LineAttribute.line > basket.Line.id", dbml)
+        self.assertIn("Ref: order.Line.parent > order.Line.id", dbml)
+        self.assertIn("Ref: order.Refund.line > order.Line.id", dbml)
+        self.assertIn("Ref: checkout.Receipt.line > order.Line.id", dbml)
+
+    def test_d2(self) -> None:
+        d2 = build_d2(self.index)
+        self.assertIn("basket.LineAttribute.line -> basket.Line.id", d2)
+        self.assertIn("order.Line.parent -> order.Line.id", d2)
+        self.assertIn("order.Refund.line -> order.Line.id", d2)
+        self.assertIn("checkout.Receipt.line -> order.Line.id", d2)
+
+    def test_plantuml(self) -> None:
+        puml = build_plantuml(self.index)
+        self.assertIn("basket_LineAttribute }o--|| basket_Line : line", puml)
+        self.assertIn("order_Line }o--|| order_Line : parent", puml)
+        self.assertIn("order_Refund }o--|| order_Line : line", puml)
+        self.assertIn("checkout_Receipt }o--|| order_Line : line", puml)
+
+    def test_dot(self) -> None:
+        dot = build_dot(self.index)
+        self.assertIn('"basket.LineAttribute" -> "basket.Line"', dot)
+        self.assertIn('"order.Line" -> "order.Line"', dot)
+        self.assertIn('"order.Refund" -> "order.Line"', dot)
+        self.assertIn('"checkout.Receipt" -> "order.Line"', dot)
+
+
 class CliWiringTest(unittest.TestCase):
     def test_er_format_flags(self) -> None:
         for fmt, marker in (

@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from .migrations_parser import (
+    OPERATION_ARGS,
     _build_current_schema,
     _find_all_migration_apps,
     _find_migration_class,
@@ -58,17 +59,8 @@ _STRUCTURAL_OPS = frozenset(
     }
 )
 
-# Django binds these constructor arguments in the order below. ``makemigrations``
-# spells them out as keywords, but hand-written migrations often pass them
-# positionally — both forms must land in the same slots (#303).
-_POSITIONAL: dict[str, tuple[str, ...]] = {
-    "CreateModel": ("name", "fields"),
-    "DeleteModel": ("name",),
-    "RenameModel": ("old_name", "new_name"),
-    "AddField": ("model_name", "name", "field"),
-    "RemoveField": ("model_name", "name"),
-    "RenameField": ("model_name", "old_name", "new_name"),
-}
+# Django's argument order per operation (#303), shared with migration-risk.
+_POSITIONAL = OPERATION_ARGS
 
 # Django adds these itself unless told otherwise, so a migration that omits
 # them is not drift.

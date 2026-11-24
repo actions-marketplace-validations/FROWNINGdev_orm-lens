@@ -45,21 +45,50 @@ _SEVERITY_CMD = {"critical": "error", "warning": "warning", "info": "notice"}
 _CONFIDENCE_CMD = {"high": "warning", "medium": "notice"}
 
 
-def _rel_posix(root: str | None, path: str) -> str:
-    """Root-relative POSIX path for annotation URIs.
+def _checkout_relative(path: Path) -> str | None:
+    """``path`` relative to the working directory, or ``None`` outside it.
 
-    ``NPlusOneFinding.file`` is already root-relative; migration-risk paths
-    are whatever the walk produced (absolute root → absolute paths). GitHub
-    matches annotations against checkout-relative paths, so strip the root
-    when we can and never raise when we can't.
+    GitHub resolves an annotation's file against the checkout root, which is
+    where a workflow runs the CLI. With ``--path backend`` a finding in
+    ``backend/shop/views.py`` must say so, not ``shop/views.py``.
+    """
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _rel_posix(root: str | None, path: str) -> str:
+    """Checkout-relative POSIX path for annotation URIs.
+
+    migration-risk paths are whatever the walk produced (absolute root →
+    absolute paths). An absolute path under the working directory is made
+    relative to it; one elsewhere falls back to the root, and this never
+    raises.
     """
     p = Path(path)
     if root is not None and p.is_absolute():
+        inside = _checkout_relative(p)
+        if inside is not None:
+            return inside
         try:
             return p.relative_to(Path(root).resolve()).as_posix()
         except ValueError:
             pass
     return p.as_posix()
+
+
+def _nplusone_path(root: str | None, file: str) -> str:
+    """Checkout-relative path of an N+1 finding.
+
+    ``NPlusOneFinding.file`` is relative to the scanned root, so join the two
+    before making the path relative to the working directory.
+    """
+    if root is not None:
+        inside = _checkout_relative(Path(root) / file)
+        if inside is not None:
+            return inside
+    return Path(file).as_posix()
 
 
 def _location(uri: str, line: int) -> dict[str, Any]:
@@ -105,7 +134,9 @@ def _nplusone_message(f: NPlusOneFinding) -> str:
     )
 
 
-def nplusone_sarif(findings: Iterable[NPlusOneFinding]) -> dict[str, Any]:
+def nplusone_sarif(
+    findings: Iterable[NPlusOneFinding], root: str | None = None
+) -> dict[str, Any]:
     """SARIF 2.1.0 document for ``orm-lens nplusone`` findings."""
     rule = {
         "id": "nplusone",
@@ -124,7 +155,7 @@ def nplusone_sarif(findings: Iterable[NPlusOneFinding]) -> dict[str, Any]:
             "ruleId": "nplusone",
             "level": _CONFIDENCE_LEVEL.get(f.confidence, "note"),
             "message": {"text": _nplusone_message(f)},
-            "locations": [_location(f.file, f.line)],
+            "locations": [_location(_nplusone_path(root, f.file), f.line)],
             "properties": {
                 "confidence": f.confidence,
                 "loopVar": f.loop_var,
@@ -188,13 +219,16 @@ def _esc_prop(s: str) -> str:
     return _esc_data(s).replace(":", "%3A").replace(",", "%2C")
 
 
-def nplusone_github(findings: Iterable[NPlusOneFinding]) -> str:
+def nplusone_github(
+    findings: Iterable[NPlusOneFinding], root: str | None = None
+) -> str:
     """GitHub Actions ``::warning``/``::notice`` lines, one per finding."""
     lines = []
     for f in findings:
         cmd = _CONFIDENCE_CMD.get(f.confidence, "notice")
+        path = _nplusone_path(root, f.file)
         lines.append(
-            f"::{cmd} file={_esc_prop(f.file)},line={f.line},"
+            f"::{cmd} file={_esc_prop(path)},line={f.line},"
             f"title={_esc_prop('orm-lens: N+1 query')}"
             f"::{_esc_data(_nplusone_message(f))}"
         )

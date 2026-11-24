@@ -327,6 +327,25 @@ def resolve_related_target(
     return related_model.rsplit(".", 1)[0], tail
 
 
+def related_model_app(
+    related_model: str, tail: str, source_app: str, apps: list[str]
+) -> str:
+    """App of the model a relation points at, among ``apps``, the apps that
+    define a model named ``tail``, in scan order.
+
+    An app-qualified reference (``"order.Line"``) keeps its app. A bare name
+    is the model in the field's own app when that app has one, as Django
+    resolves it. Otherwise the first app wins.
+    """
+    if "." in related_model:
+        label = related_model.rsplit(".", 1)[0]
+        if label in apps:
+            return label
+    if source_app in apps:
+        return source_app
+    return apps[0]
+
+
 def workspace_app_names(index: WorkspaceIndex) -> set[str]:
     """The app names the scan found, which is each app's directory name.
 

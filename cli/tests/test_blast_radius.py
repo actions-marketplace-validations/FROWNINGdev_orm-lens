@@ -138,7 +138,14 @@ class RenderingTest(unittest.TestCase):
                 self.assertEqual(line.count("|") - line.count("\\|"), 5)
 
     def test_github_annotations_point_at_the_migration_line(self) -> None:
-        out = blast_radius_github(self.report, str(FIXTURE))
+        # Annotation paths are relative to the working directory, the checkout
+        # root in CI, so run from the fixture as if it were the checkout.
+        previous = os.getcwd()
+        os.chdir(FIXTURE)
+        try:
+            out = blast_radius_github(self.report, str(FIXTURE))
+        finally:
+            os.chdir(previous)
         self.assertIn("::error", out)
         self.assertIn("file=blog/migrations/0002_drop_author.py", out)
         self.assertIn("certain reference(s)", out)

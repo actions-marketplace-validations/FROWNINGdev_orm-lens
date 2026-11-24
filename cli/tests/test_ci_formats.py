@@ -11,6 +11,7 @@ URIs, per-rule dedup, and GitHub's property/data escaping rules.
 
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -270,6 +271,43 @@ class MigrationRisksGithubTest(unittest.TestCase):
         self.assertEqual(len(out.splitlines()), 1)
         self.assertIn("100%25", out)
         self.assertIn("Step 1%0AStep 2", out)
+
+    def test_paths_under_a_subdirectory_root_stay_checkout_relative(self) -> None:
+        # The GitHub Action runs from the checkout root with `path: backend`.
+        # GitHub resolves annotation files against the checkout, so every
+        # format must keep the `backend/` prefix.
+        with TemporaryDirectory() as tmp:
+            checkout = Path(tmp).resolve()
+            migration = checkout / "backend" / "orders" / "migrations" / "0002.py"
+            previous = os.getcwd()
+            os.chdir(checkout)
+            try:
+                for root in ("backend", str(checkout / "backend")):
+                    risk = _migration_risk(
+                        file_path=str(migration)
+                        if Path(root).is_absolute()
+                        else "backend/orders/migrations/0002.py"
+                    )
+                    self.assertIn(
+                        "file=backend/orders/migrations/0002.py,",
+                        migration_risks_github([risk], root=root),
+                    )
+                    uri = migration_risks_sarif([risk], root=root)["runs"][0][
+                        "results"
+                    ][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                    self.assertEqual(uri, "backend/orders/migrations/0002.py")
+
+                    finding = _nplusone_finding(file="shop/views.py", line=12)
+                    self.assertIn(
+                        "file=backend/shop/views.py,",
+                        nplusone_github([finding], root=root),
+                    )
+                    uri = nplusone_sarif([finding], root=root)["runs"][0]["results"][
+                        0
+                    ]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                    self.assertEqual(uri, "backend/shop/views.py")
+            finally:
+                os.chdir(previous)
 
     def test_absolute_path_with_root_is_relativized(self) -> None:
         with TemporaryDirectory() as tmp:

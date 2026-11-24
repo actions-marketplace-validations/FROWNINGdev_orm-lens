@@ -491,10 +491,51 @@ class MigrationRisk:
         }
 
 
+# Django binds these operation arguments in the order below. ``makemigrations``
+# spells them out as keywords, but hand-written migrations often pass them
+# positionally, and both forms must land in the same slots (#303).
+OPERATION_ARGS: dict[str, tuple[str, ...]] = {
+    "CreateModel": ("name", "fields", "options", "bases", "managers"),
+    "DeleteModel": ("name",),
+    "RenameModel": ("old_name", "new_name"),
+    "AlterModelTable": ("name", "table"),
+    "AlterModelTableComment": ("name", "table_comment"),
+    "AlterUniqueTogether": ("name", "unique_together"),
+    "AlterIndexTogether": ("name", "index_together"),
+    "AlterModelOptions": ("name", "options"),
+    "AlterModelManagers": ("name", "managers"),
+    "AlterOrderWithRespectTo": ("name", "order_with_respect_to"),
+    "AddField": ("model_name", "name", "field", "preserve_default"),
+    "RemoveField": ("model_name", "name"),
+    "AlterField": ("model_name", "name", "field", "preserve_default"),
+    "RenameField": ("model_name", "old_name", "new_name"),
+    "AddIndex": ("model_name", "index"),
+    "RemoveIndex": ("model_name", "name"),
+    "RenameIndex": ("model_name", "new_name", "old_name", "old_fields"),
+    "AddConstraint": ("model_name", "constraint"),
+    "RemoveConstraint": ("model_name", "name"),
+    "RunSQL": ("sql", "reverse_sql", "state_operations", "hints", "elidable"),
+    "RunPython": ("code", "reverse_code", "atomic", "hints", "elidable"),
+}
+
+
 def _get_kwarg(call: ast.Call, name: str) -> ast.AST | None:
+    """The argument bound to ``name``, keyword or positional.
+
+    Keywords win, matching Python. Positions are only read for the Django
+    operations in :data:`OPERATION_ARGS`, never for field constructors, whose
+    first positional argument is ``verbose_name``.
+    """
     for kw in call.keywords:
         if kw.arg == name:
             return kw.value
+    names = OPERATION_ARGS.get(_call_op_name(call) or "", ())
+    if name in names:
+        index = names.index(name)
+        if index < len(call.args) and not any(
+            isinstance(a, ast.Starred) for a in call.args[: index + 1]
+        ):
+            return call.args[index]
     return None
 
 

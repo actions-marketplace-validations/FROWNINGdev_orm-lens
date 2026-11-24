@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 from orm_lens.cli import _build_mermaid, main
-from orm_lens.er_formats import build_dbml
+from orm_lens.er_formats import build_d2, build_dbml, build_dot, build_plantuml
 from orm_lens.models import ParsedApp, WorkspaceIndex
 from orm_lens.parser import scan_workspace
 from orm_lens.sqlalchemy_parser import (
@@ -609,3 +609,23 @@ def test_constraint_carried_by_sole_primary_key_is_one_to_one() -> None:
     )
     fields = _fields(_models(("app/models.py", source))["OrderLine"])
     assert fields["order_id"].relation_kind == "OneToOneField"
+
+
+def test_composite_constraint_preserves_column_types_and_primary_keys_in_every_format() -> None:
+    models = list(_models(("app/models.py", COMPOSITE_FK)).values())
+    index = WorkspaceIndex(apps=[ParsedApp(name="app", path="app", models=models)])
+
+    d2 = build_d2(index)
+    assert "  order_id: Integer {constraint: [primary_key; foreign_key]}" in d2
+    assert d2.count("  tenant_id: Integer {constraint: primary_key}") == 2
+    assert "  order_id: ForeignKey" not in d2
+
+    plantuml = build_plantuml(index)
+    assert "  * order_id : Integer <<FK>>" in plantuml
+    assert plantuml.count("  * tenant_id : Integer") == 2
+    assert "order_id : ForeignKey" not in plantuml
+
+    dot = build_dot(index)
+    assert '<B>order_id</B></TD><TD>Integer · PK · FK</TD>' in dot
+    assert dot.count('<B>tenant_id</B></TD><TD>Integer · PK</TD>') == 2
+    assert "ForeignKey · FK" not in dot
