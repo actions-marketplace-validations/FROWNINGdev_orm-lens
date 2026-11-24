@@ -4,14 +4,14 @@
 #
 #   repos:
 #     - repo: https://github.com/FROWNINGdev/orm-lens
-#       rev: py-v1.18.2
+#       rev: py-v1.18.3
 #       hooks:
 #         - id: orm-lens-nplusone
 #         - id: orm-lens-migration-risk
 #
 # The hook environment installs orm-lens from PyPI (see the root
 # pyproject.toml shim). Pin the analyzer itself with:
-#   additional_dependencies: ["orm-lens==1.18.2"]
+#   additional_dependencies: ["orm-lens==1.18.3"]
 # A pin of `django-orm-lens==<version>` from 1.16.0 on resolves to the same
 # orm-lens release. Older ones predate the `orm-lens` command, so with them
 # the hook runs the newest orm-lens instead; switch the pin to orm-lens.
@@ -38,7 +38,10 @@
     data migrations, ...). Exits non-zero on critical findings.
   entry: orm-lens migration-risk
   language: python
-  pass_filenames: false
+  # Only the staged migrations are reported, so a project with old risky
+  # migrations can adopt the hook; `pre-commit run --all-files` checks all.
+  pass_filenames: true
+  files: (^|/)(migrations|versions)/[^/]+\.py$
   types: [python]
 
 - id: django-orm-lens-nplusone
@@ -54,5 +57,8 @@
   description: Pre-rename id of orm-lens-migration-risk.
   entry: orm-lens migration-risk
   language: python
-  pass_filenames: false
+  # Only the staged migrations are reported, so a project with old risky
+  # migrations can adopt the hook; `pre-commit run --all-files` checks all.
+  pass_filenames: true
+  files: (^|/)(migrations|versions)/[^/]+\.py$
   types: [python]

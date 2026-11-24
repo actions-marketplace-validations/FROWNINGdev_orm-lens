@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { randomBytes } from 'crypto';
-import { WorkspaceIndex } from './types';
+import { ParsedModel, WorkspaceIndex } from './types';
 import { findUserModel, resolveRelatedTail } from './parser';
 
 // Kept exported for CLI parity — the Python side still emits Mermaid, and
@@ -13,6 +13,10 @@ function escapeLabel(s: string): string {
 
 export function buildMermaid(index: WorkspaceIndex): string {
   const lines: string[] = ['erDiagram'];
+  // The whole table: an abstract base's columns and relations land on every
+  // concrete subclass (oscar's `UserAddress(AbstractUserAddress)` declares
+  // nothing itself).
+  const columns = (m: ParsedModel) => [...m.inheritedFields, ...m.fields];
   const modelNames = new Set<string>();
   for (const app of index.apps) {
     for (const model of app.models) {
@@ -24,7 +28,7 @@ export function buildMermaid(index: WorkspaceIndex): string {
     for (const model of app.models) {
       const safe = escapeLabel(model.name);
       lines.push(`  ${safe} {`);
-      for (const f of model.fields) {
+      for (const f of columns(model)) {
         if (f.isRelation) continue;
         const type = f.type.replace(/[^A-Za-z0-9]/g, '');
         const name = f.name.replace(/[^A-Za-z0-9_]/g, '_');
@@ -38,7 +42,7 @@ export function buildMermaid(index: WorkspaceIndex): string {
   const userModelName = userModel?.name;
   for (const app of index.apps) {
     for (const model of app.models) {
-      for (const f of model.fields) {
+      for (const f of columns(model)) {
         if (!f.isRelation || !f.relatedModel) continue;
         const target =
           f.relatedModel === 'self'
@@ -55,7 +59,10 @@ export function buildMermaid(index: WorkspaceIndex): string {
         const parts: string[] = [sanitizeLabel(f.name)];
         if (f.onDelete) parts.push(sanitizeLabel(f.onDelete));
         if (f.throughModel) parts.push(`through ${sanitizeLabel(f.throughModel)}`);
-        if (f.relatedName) parts.push(`as ${sanitizeLabel(f.relatedName)}`);
+        // related_name='+' turns the reverse accessor off: no name to show.
+        if (f.relatedName && !f.relatedName.endsWith('+')) {
+          parts.push(`as ${sanitizeLabel(f.relatedName)}`);
+        }
         const label = parts.length > 1
           ? `${parts[0]} [${parts.slice(1).join(', ')}]`
           : parts[0];
@@ -95,7 +102,7 @@ function buildIndexPayload(index: WorkspaceIndex): Record<string, unknown> {
         appName: m.appName,
         filePath: m.filePath,
         lineNumber: m.lineNumber,
-        fields: m.fields.map((f) => ({
+        fields: [...m.inheritedFields, ...m.fields].map((f) => ({
           name: f.name,
           type: f.type,
           isRelation: f.isRelation,

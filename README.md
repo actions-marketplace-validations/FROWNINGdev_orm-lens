@@ -538,11 +538,13 @@ The comment goes up **before** the job fails, so a blocked PR still explains why
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/FROWNINGdev/orm-lens
-    rev: py-v1.18.2
+    rev: py-v1.18.3
     hooks:
       - id: orm-lens-nplusone
       - id: orm-lens-migration-risk
 ```
+
+`orm-lens-migration-risk` reports only the migrations you stage, so a project whose old migrations already ran in production can adopt it today. `pre-commit run --all-files` checks every migration. On the command line the same is `orm-lens migration-risk app/migrations/0042_x.py` or `--only PATH`.
 
 **GitHub Action** — findings appear as PR annotations with zero extra permissions:
 
@@ -551,6 +553,8 @@ repos:
   with:
     command: migration-risk      # or: nplusone
     format: github               # ::error / ::warning annotations on the diff
+    only-changed: true           # only the migrations this PR adds or edits
+    github-token: ${{ github.token }}
 ```
 
 **SARIF → Code Scanning** — findings land in the repo Security tab:

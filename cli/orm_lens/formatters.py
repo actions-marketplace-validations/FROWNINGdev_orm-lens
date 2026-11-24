@@ -7,6 +7,7 @@ GitHub-flavoured Markdown, or a plain ASCII table. Zero third-party deps.
 from __future__ import annotations
 
 import json
+import os
 
 from .models import ParsedModel, WorkspaceIndex
 
@@ -34,8 +35,11 @@ def format_model(model: ParsedModel, fmt: str = "markdown") -> str:
 
 
 def _shown_fields(model: ParsedModel) -> list:
-    """A SQLAlchemy table's every column; what a Django class declares."""
-    return model.all_fields() if model.orm == "sqlalchemy" else model.fields
+    """Every column of the model's table, abstract bases' fields first.
+
+    An oscar ``UserAddress(AbstractUserAddress)`` declares nothing itself, so
+    showing only the class body printed 0 fields for it."""
+    return model.all_fields()
 
 
 def _relationship_line(r) -> str:
@@ -147,10 +151,22 @@ def _index_table(index: WorkspaceIndex) -> str:
                     m.name,
                     str(scalars),
                     str(rels),
-                    f"{m.file_path}:{m.line_number + 1}",
+                    f"{_short_path(m.file_path)}:{m.line_number + 1}",
                 )
             )
     return _render_table(header, rows)
+
+
+def _short_path(path: str) -> str:
+    """``path`` relative to the working directory when it lies under it.
+
+    The scan stores absolute paths, which made every table row as wide as
+    the temp or home directory the project sits in."""
+    try:
+        rel = os.path.relpath(path)
+    except ValueError:  # another drive on Windows
+        return path
+    return path if rel.startswith("..") else rel
 
 
 def _model_table(model: ParsedModel) -> str:

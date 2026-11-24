@@ -7,7 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **migration-risk: report only the migrations you pass**
+  ([#355](https://github.com/FROWNINGdev/orm-lens/pull/355)),
+  with `--only PATH` or positional files.
+  The whole history is still analyzed, but the report and the exit code
+  cover only those files. The `orm-lens-migration-risk` pre-commit hook now
+  passes the staged migrations, so a project whose old migrations already
+  ran can adopt it: on django-oscar the hook failed on every commit with 29
+  critical findings from 2014, and now reports only what you stage.
+  `only-changed: true` in the GitHub Action works for `migration-risk` too.
+
 ### Fixed
+
+- **ER diagrams, `scan` and hover cards show fields from abstract bases**
+  ([#354](https://github.com/FROWNINGdev/orm-lens/pull/354)).
+  They used to draw only what a class body declares, so on django-oscar 87
+  of 98 models showed 0 fields, and the ER diagram had 4 relations instead
+  of 117. Wagtail went from 52 to 138. Every output that describes the table
+  (`scan -f table|markdown`, `er` in all five formats, the extension's ER
+  view and hover) now includes the columns and relations an abstract base
+  contributes. The JSON `fields` list and the sidebar tree still list only
+  declared fields. Mermaid labels also drop `as _` for `related_name="+"`,
+  which turns the reverse accessor off, and the `scan -f table` file column
+  is relative to the working directory instead of an absolute path.
+
+## [py-1.18.3] - 2026-11-23
+
+> Fewer false drift and migration-risk findings on real projects.
+
+### Fixed
+
+- **parser: recognize models built on django-solo, django-treebeard and django-tree-queries**
+  ([#330](https://github.com/FROWNINGdev/orm-lens/issues/330)).
+  `SingletonModel`, `MP_Node`, `NS_Node`, `AL_Node` and `TreeNode` live in
+  site-packages, so a class with only one of them as its base was not counted
+  as a model. wagtail's `Collection` and django-cms's `Page` and `PageType`
+  went missing from the scan. These bases now count when they are imported
+  from their packages; a local class with the same name does not.
+
+- **drift: no false `id` after a `RenameField` of the primary key**
+  ([#328](https://github.com/FROWNINGdev/orm-lens/issues/328)).
+  When a migration renames the primary key, the replayed state kept the
+  implicit `id` as well, and `drift` reported it as migrated but no longer
+  declared. On saleor this removes three false `id` lines.
+
+- **nplusone: `dict.get("key")` on a loop variable is not a manager call**
+  ([#329](https://github.com/FROWNINGdev/orm-lens/issues/329)).
+  `task.task.get("func")` on a dict field was read as a related-manager
+  access and got a `.prefetch_related("task")` that fails at runtime.
+  `QuerySet.get()` never takes a string as its first positional argument,
+  so such a call is now read as `dict.get`.
+
+- **migration-deps: use the app label set by `AppConfig.label`**
+  ([#327](https://github.com/FROWNINGdev/orm-lens/issues/327)).
+  With `label = "forum_threads"` in `apps.py`, `migration-deps threads`
+  reported every migration as both a root and a leaf, and asking by the real
+  label found no migrations folder. The label is now resolved the same way
+  `migration-risk` does it; on Misago, threads has one root and one leaf.
 
 - **migration-risk: `NullBooleanField` is nullable without `null=True`**
   ([#338](https://github.com/FROWNINGdev/orm-lens/issues/338)).
@@ -33,14 +91,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a critical conflict. The app's graph is now treated as unknown, as for
   computed `dependencies`, and the leaf check stays silent for that app.
 
-- **parser: `TimeStampedModel` subclasses keep `created` and `modified`**
-  ([#336](https://github.com/FROWNINGdev/orm-lens/issues/336)).
-  django-extensions and django-model-utils both define an abstract
-  `TimeStampedModel` with these two fields, but it lives in site-packages, so
-  every subclass lost them and `drift` reported both as "migrated but no
-  longer declared". They now come from the same table as the
-  `django.contrib.auth` bases; a workspace class of that name still wins.
-
 - **parser: resolve a base bound by `get_model("app", "Model")`**
   ([#341](https://github.com/FROWNINGdev/orm-lens/issues/341)).
   django-oscar binds `Benefit = get_model("offer", "Benefit")` in
@@ -58,6 +108,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   project signals, which models never send. The note now appears only for
   `pre_init`, `post_init`, `pre_save`, `post_save`, `pre_delete`,
   `post_delete` and `m2m_changed`; the sender still shows as `<any>`.
+
+- **parser: `TimeStampedModel` subclasses keep `created` and `modified`**
+  ([#336](https://github.com/FROWNINGdev/orm-lens/issues/336)).
+  django-extensions and django-model-utils both define an abstract
+  `TimeStampedModel` with these two fields, but it lives in site-packages, so
+  every subclass lost them and `drift` reported both as "migrated but no
+  longer declared". They now come from the same table as the
+  `django.contrib.auth` bases; a workspace class of that name still wins.
+
+- **parser: keep a model whose base list holds a call**
+  ([#335](https://github.com/FROWNINGdev/orm-lens/issues/335)).
+  `class Comment(ExportModelOperationsMixin("comment"), models.Model)` was
+  dropped because the class-header regex only reads bases up to the first
+  `)`. Calls in the base list are now stripped before matching, so the other
+  bases still decide whether the class is a model; a call as the only base
+  is still not a model. Python and TypeScript parsers.
+
+## [0.22.3] - 2026-11-23
+
+> Parser keeps more models: call bases, TimeStampedModel fields.
+
+### Fixed
+
+- **parser: `TimeStampedModel` subclasses keep `created` and `modified`**
+  ([#336](https://github.com/FROWNINGdev/orm-lens/issues/336)).
+  django-extensions and django-model-utils both define an abstract
+  `TimeStampedModel` with these two fields, but it lives in site-packages, so
+  every subclass lost them and `drift` reported both as "migrated but no
+  longer declared". They now come from the same table as the
+  `django.contrib.auth` bases; a workspace class of that name still wins.
 
 - **parser: keep a model whose base list holds a call**
   ([#335](https://github.com/FROWNINGdev/orm-lens/issues/335)).

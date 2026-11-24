@@ -43,3 +43,26 @@ class Membership(models.Model):
   assert.match(mermaid, /User \|\|--\|\| Profile : "profile \[CASCADE, as user\]"/);
   assert.match(mermaid, /Group \}o--o\{ User : "members \[through Membership, as groups\]"/);
 });
+test('draws columns and relations inherited from an abstract base', () => {
+  const models = parseModelsFile('/project/shop/models.py', `
+class AbstractAddress(models.Model):
+    line1 = models.CharField(max_length=255)
+    country = models.ForeignKey('Country', on_delete=models.CASCADE, related_name='+')
+
+    class Meta:
+        abstract = True
+
+class Country(models.Model):
+    name = models.CharField(max_length=100)
+
+class Address(AbstractAddress):
+    pass
+`);
+  const mermaid = buildMermaid({
+    apps: [{ name: 'shop', path: '/project/shop', models }],
+    scannedAt: 0,
+  });
+  assert.match(mermaid, /Address \{\n    CharField line1\n  \}/);
+  assert.ok(mermaid.includes('Address }o--|| Country : "country [CASCADE]"'), mermaid);
+  assert.ok(!mermaid.includes('as _'), mermaid);
+});

@@ -29,7 +29,7 @@ from pathlib import Path
 
 from . import __version__
 from .alembic_risk import analyze_alembic_risks
-from .blast_radius import analyze_blast_radius, format_blast_radius
+from .blast_radius import _matches_filter, analyze_blast_radius, format_blast_radius
 from .ci_formats import (
     migration_risks_github,
     migration_risks_sarif,
@@ -280,9 +280,30 @@ def _cmd_nplusone(args: argparse.Namespace) -> int:
 _SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
 
 
+def _only_paths(paths: Sequence[str], root: str) -> set[str] | None:
+    """Both spellings of each path: as given, and resolved (from the cwd and
+    from ``root``), so it matches however the scan spelled ``file_path``."""
+    if not paths:
+        return None
+    root_path = Path(root).resolve()
+    only: set[str] = set()
+    for p in paths:
+        only.add(p)
+        with contextlib.suppress(OSError):
+            only.add(str(Path(p).resolve()))
+            if not Path(p).is_absolute():
+                only.add(str((root_path / p).resolve()))
+    return only
+
+
 def _cmd_migration_risk(args: argparse.Namespace) -> int:
     """Analyze Django migrations and Alembic revisions for operations dangerous in production."""
     findings = analyze_migration_risks(args.path) + analyze_alembic_risks(args.path)
+    # Every migration is analyzed (leaf conflicts and earlier RunPython need
+    # the whole history); only the report is narrowed to the given files.
+    only = _only_paths([*args.only, *args.files], args.path)
+    if only is not None:
+        findings = [f for f in findings if _matches_filter(f, only)]
     findings.sort(key=lambda r: (_SEVERITY_ORDER.get(r.severity, 99), r.file_path, r.line_number))
     if args.severity != "all":
         threshold = _SEVERITY_ORDER[args.severity]
@@ -705,7 +726,9 @@ def _build_mermaid(index: WorkspaceIndex) -> str:
                     parts.append(sanitize_label(f.on_delete))
                 if f.through_model:
                     parts.append(f"through {sanitize_label(f.through_model)}")
-                if f.related_name:
+                # related_name="+" (or "foo+") turns the reverse accessor off,
+                # so there is no name to show.
+                if f.related_name and not f.related_name.endswith("+"):
                     parts.append(f"as {sanitize_label(f.related_name)}")
                 label = (
                     f"{parts[0]} [{', '.join(parts[1:])}]"
@@ -866,6 +889,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--exit-zero",
         action="store_true",
         help="Always exit 0 even when critical findings are present",
+    )
+    mrisk.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        metavar="MIGRATION",
+        help=(
+            "Report only findings in these migration files (repeatable). The "
+            "whole history is still analyzed. Default: every migration"
+        ),
+    )
+    mrisk.add_argument(
+        "files",
+        nargs="*",
+        default=[],
+        metavar="FILE",
+        help=(
+            "Same as --only, as positional paths: the pre-commit hook passes "
+            "the staged migration files here"
+        ),
     )
     mrisk.set_defaults(func=_cmd_migration_risk)
 

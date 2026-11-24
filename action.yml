@@ -49,9 +49,9 @@ inputs:
     default: "true"
   only-changed:
     description: >-
-      blast-radius only. Restrict the report to migration files this pull
-      request touches, instead of every migration in the workspace. Needs
-      github-token. Ignored outside pull_request events.
+      blast-radius and migration-risk. Restrict the report to migration files
+      this pull request touches, instead of every migration in the workspace.
+      Needs github-token. Ignored outside pull_request events.
     required: false
     default: "false"
   comment:
@@ -122,8 +122,10 @@ runs:
         esac
 
         IS_BLAST=false
+        CAN_ONLY=false
         case "$DOL_COMMAND" in
-          blast-radius|blast) IS_BLAST=true ;;
+          blast-radius|blast) IS_BLAST=true; CAN_ONLY=true ;;
+          migration-risk) CAN_ONLY=true ;;
         esac
 
         # --- only-changed: scope the report to this PR's migrations ---------
@@ -131,7 +133,7 @@ runs:
         # actions/checkout defaults to depth 1 and the base commit is simply
         # not in the local history.
         ONLY_ARGS=""
-        if [ "$DOL_ONLY_CHANGED" = "true" ] && [ "$IS_BLAST" = true ]; then
+        if [ "$DOL_ONLY_CHANGED" = "true" ] && [ "$CAN_ONLY" = true ]; then
           if [ -z "${DOL_PR:-}" ]; then
             echo "::notice::only-changed ignored — not a pull_request event"
           elif [ -z "${GH_TOKEN:-}" ]; then
@@ -139,7 +141,7 @@ runs:
           else
             CHANGED=$(gh api "repos/$DOL_REPO/pulls/$DOL_PR/files" --paginate \
               --jq '.[] | select(.status != "removed") | .filename' \
-              | grep -E '(^|/)migrations/[^/]+\.py$' || true)
+              | grep -E '(^|/)(migrations|versions)/[^/]+\.py$' || true)
             if [ -z "$CHANGED" ]; then
               echo "::notice::no migration files changed in this PR — nothing to review"
               exit 0

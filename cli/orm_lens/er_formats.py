@@ -81,11 +81,9 @@ _PK_RE = re.compile(r"\bprimary_key\s*=\s*True\b")
 
 
 def _columns(model: ParsedModel) -> list[ParsedField]:
-    """Fields drawn for ``model``: what a Django class declares, the whole
-    table for a SQLAlchemy one."""
-    if model.orm == "sqlalchemy":
-        return model.all_fields()
-    return model.fields
+    """Fields drawn for ``model``: the whole table, including the columns
+    and relations an abstract base contributes."""
+    return model.all_fields()
 
 
 def _implicit_pk_type(model: ParsedModel) -> str:

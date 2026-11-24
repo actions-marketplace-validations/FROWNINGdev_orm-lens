@@ -128,9 +128,10 @@ class ParsedModel:
     deliberately excluded: there the parent keeps its own table and the child
     only gains a ``parent_ptr``.
 
-    Kept separate from :attr:`fields` (and out of :meth:`to_dict`) so the tree,
-    ER diagrams and the extension keep showing what each class literally
-    declares.
+    Kept separate from :attr:`fields` (and, for Django, out of
+    :meth:`to_dict`) so JSON consumers and the extension still see what each
+    class literally declares. The CLI table, markdown and ER diagrams draw
+    :meth:`all_fields`, because they describe the table.
     """
     orm: str = "django"
     """``"django"`` or ``"sqlalchemy"``."""
