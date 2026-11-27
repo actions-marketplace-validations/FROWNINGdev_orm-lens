@@ -863,7 +863,8 @@ class ScanForNPlusOneTest(unittest.TestCase):
 
     def test_select_related_with_no_args_covers_all_fks(self) -> None:
         """``.select_related()`` (no args) follows every FK on the model —
-        no findings for FK accesses.
+        no findings for FK accesses. The flat schema carries no ``null=True``,
+        so every FK counts as non-null here.
         """
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -877,6 +878,86 @@ class ScanForNPlusOneTest(unittest.TestCase):
             )
             findings = scan_for_nplusone(str(root), BLOG_SCHEMA)
             self.assertEqual(findings, [])
+
+    # Django's no-argument ``select_related()`` follows only non-null forward
+    # relations: it joins ``customer`` but loads ``coupon`` (null=True) and the
+    # reverse one-to-one ``receipt`` with a query per row.
+    ORDER_INDEX = {
+        "apps": [
+            {
+                "name": "shop",
+                "path": "shop",
+                "models": [
+                    {
+                        "name": "Order",
+                        "fields": [
+                            {"name": "customer", "isRelation": True, "relationKind": "ForeignKey",
+                             "relatedModel": "Customer", "args": "Customer, on_delete=models.CASCADE"},
+                            {"name": "coupon", "isRelation": True, "relationKind": "ForeignKey",
+                             "relatedModel": "Coupon",
+                             "args": "Coupon, on_delete=models.SET_NULL, null=True"},
+                            {"name": "note", "isRelation": False},
+                        ],
+                    },
+                    {"name": "Customer", "fields": [{"name": "name", "isRelation": False}]},
+                    {"name": "Coupon", "fields": [{"name": "code", "isRelation": False}]},
+                    {
+                        "name": "Receipt",
+                        "fields": [
+                            {"name": "order", "isRelation": True, "relationKind": "OneToOneField",
+                             "relatedModel": "Order", "relatedName": "receipt",
+                             "args": 'Order, on_delete=models.CASCADE, related_name="receipt"'},
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+
+    def _order_loop_findings(self, chain: str, access: str) -> list:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write(
+                root / "views.py",
+                "from shop.models import Order\n"
+                "def run():\n"
+                f"    orders = Order.objects.{chain}\n"
+                "    for order in orders:\n"
+                f"        print(order.{access})\n",
+            )
+            return scan_for_nplusone(str(root), self.ORDER_INDEX)
+
+    def test_select_related_with_no_args_skips_nullable_and_reverse_o2o(self) -> None:
+        for access, accessed in (
+            ("coupon", ["coupon"]),
+            ("coupon.code", ["coupon"]),
+            ("receipt", ["receipt"]),
+            ("coupon_id", None),
+        ):
+            with self.subTest(access=access):
+                findings = self._order_loop_findings("select_related()", access)
+                if accessed is None:
+                    self.assertEqual(findings, [])
+                else:
+                    self.assertEqual(len(findings), 1)
+                    self.assertEqual(findings[0].accessed, accessed)
+
+    def test_select_related_with_no_args_still_covers_non_null_fk(self) -> None:
+        for chain, access in (
+            ("select_related()", "customer"),
+            ("select_related()", "customer.name"),
+            ('select_related("coupon")', "coupon"),
+            ('select_related("receipt")', "receipt"),
+            ('select_related().prefetch_related("coupon")', "coupon"),
+        ):
+            with self.subTest(chain=chain, access=access):
+                self.assertEqual(self._order_loop_findings(chain, access), [])
+
+    def test_workspace_index_records_nullable_relations(self) -> None:
+        from orm_lens.query_analyzer import _normalise_schema
+
+        schema = _normalise_schema(self.ORDER_INDEX)
+        self.assertEqual(schema.nullable, {("Order", "coupon")})
 
     def test_bad_path_returns_empty(self) -> None:
         findings = scan_for_nplusone("/nonexistent/path/that/should/not/exist_zzz")

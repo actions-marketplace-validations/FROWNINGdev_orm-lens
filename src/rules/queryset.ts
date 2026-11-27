@@ -2,6 +2,7 @@ import { Finding, Rule, RuleContext } from './types';
 import { lookupTypos } from '../lookupTypos';
 import {
   MAX_ASSIGN_LOOKBACK,
+  bareSelectLoads,
   classifyAttr,
   isCovered,
   resolveLoopSource,
@@ -167,6 +168,96 @@ function isOperandRight(line: string, end: number): boolean {
   return /^(?:is|in)\b/.test(after);
 }
 
+interface ChainSegment {
+  /** Attribute or method name. */
+  name: string;
+  /** Argument text of each call on the segment: `f(a)(b)` gives `['a', 'b']`. */
+  calls: string[];
+  /** Index just after the segment: after its last `)`, or after its name. */
+  end: number;
+}
+
+/**
+ * Parse the attribute/call chain that starts at `start` — `a.b(x).c()` —
+ * where call arguments may nest parentheses and hold string literals.
+ */
+function parseChain(text: string, start: number): ChainSegment[] {
+  const out: ChainSegment[] = [];
+  let i = start;
+  for (;;) {
+    const name = /^[A-Za-z_]\w*/.exec(text.slice(i));
+    if (!name) return out;
+    i += name[0].length;
+    const calls: string[] = [];
+    while (text[i] === '(') {
+      const close = closingParen(text, i);
+      if (close < 0) return out;
+      calls.push(text.slice(i + 1, close));
+      i = close + 1;
+    }
+    out.push({ name: name[0], calls, end: i });
+    if (text[i] !== '.') return out;
+    i++;
+  }
+}
+
+/**
+ * The whole chain that ends at `end`, the `.` before `.count()` or
+ * `.first()`.
+ *
+ * The DOL001-DOL004 patterns only see the calls after the last nested or
+ * repeated call, so in `qs.filter(a=1).order_by("-id").count() == 0` they
+ * match from `order_by`. A fix written from there puts `not` inside the
+ * chain, a SyntaxError, and the operator checks look at the `.` before it.
+ * Returns null when no chain ends at `end`.
+ */
+function receiverChain(
+  text: string,
+  end: number,
+): { start: number; segments: ChainSegment[] } | null {
+  for (let s = end - 1; s >= 0; s--) {
+    if (!/[A-Za-z_]/.test(text[s]) || (s > 0 && /[\w.]/.test(text[s - 1]))) continue;
+    const segments = parseChain(text, s);
+    const last = segments.findIndex((seg) => seg.end === end);
+    if (last >= 0) return { start: s, segments: segments.slice(0, last + 1) };
+  }
+  return null;
+}
+
+/**
+ * The receiver of a DOL001-DOL004 match — the whole chain before `.count()`
+ * or `.first()` — or null when rewriting the match would break the code or
+ * change its meaning.
+ */
+function rewriteReceiver(
+  text: string,
+  m: RegExpExecArray,
+): { start: number; receiver: string; segments: ChainSegment[] } | null {
+  const end = m.index + m[1].length;
+  const chain = receiverChain(text, end);
+  if (!chain) return null;
+  if (isOperand(text, chain.start)) return null;
+  if (isOperandRight(text, m.index + m[0].length)) return null;
+  return { ...chain, receiver: text.slice(chain.start, end) };
+}
+
+/**
+ * True when the chain yields single values: a `values_list()` with `flat=`
+ * anything but `False`. Its `.first()` is also None when the first row holds
+ * NULL, so `.first() is None` is not an existence test there, and `.exists()`
+ * would change the result.
+ */
+function yieldsFlatValues(segments: ChainSegment[]): boolean {
+  return segments.some(
+    (seg) =>
+      seg.name === 'values_list' &&
+      seg.calls.some((args) => {
+        const flat = /(?:^|,)\s*flat\s*=\s*([^,]+)/.exec(args);
+        return flat !== null && flat[1].trim() !== 'False';
+      }),
+  );
+}
+
 function mayIterateQuerySet(expr: string): boolean {
   const callAt = expr.indexOf('(');
   if (callAt === -1) return true;
@@ -200,14 +291,14 @@ const DOL001: Rule = {
       RE_COUNT_GT_ZERO.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = RE_COUNT_GT_ZERO.exec(text)) !== null) {
-        if (isOperand(text, m.index)) continue;
-        if (isOperandRight(text, m.index + m[0].length)) continue;
+        const r = rewriteReceiver(text, m);
+        if (!r) continue;
         out.push({
           code: 'DOL001',
           messageId: 'default',
-          range: { line: i, startCol: m.index, endCol: m.index + m[0].length },
+          range: { line: i, startCol: r.start, endCol: m.index + m[0].length },
           applicability: 'safe',
-          fixHint: m[1],
+          fixHint: r.receiver,
         });
       }
     }
@@ -237,14 +328,14 @@ const DOL002: Rule = {
       RE_COUNT_EQ_ZERO.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = RE_COUNT_EQ_ZERO.exec(text)) !== null) {
-        if (isOperand(text, m.index)) continue;
-        if (isOperandRight(text, m.index + m[0].length)) continue;
+        const r = rewriteReceiver(text, m);
+        if (!r) continue;
         out.push({
           code: 'DOL002',
           messageId: 'default',
-          range: { line: i, startCol: m.index, endCol: m.index + m[0].length },
+          range: { line: i, startCol: r.start, endCol: m.index + m[0].length },
           applicability: 'safe',
-          fixHint: m[1],
+          fixHint: r.receiver,
         });
       }
     }
@@ -274,14 +365,14 @@ const DOL003: Rule = {
       RE_FIRST_IS_NONE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = RE_FIRST_IS_NONE.exec(text)) !== null) {
-        if (isOperand(text, m.index)) continue;
-        if (isOperandRight(text, m.index + m[0].length)) continue;
+        const r = rewriteReceiver(text, m);
+        if (!r || yieldsFlatValues(r.segments)) continue;
         out.push({
           code: 'DOL003',
           messageId: 'default',
-          range: { line: i, startCol: m.index, endCol: m.index + m[0].length },
+          range: { line: i, startCol: r.start, endCol: m.index + m[0].length },
           applicability: 'safe',
-          fixHint: m[1],
+          fixHint: r.receiver,
         });
       }
     }
@@ -311,14 +402,14 @@ const DOL004: Rule = {
       RE_FIRST_IS_NOT_NONE.lastIndex = 0;
       let m: RegExpExecArray | null;
       while ((m = RE_FIRST_IS_NOT_NONE.exec(text)) !== null) {
-        if (isOperand(text, m.index)) continue;
-        if (isOperandRight(text, m.index + m[0].length)) continue;
+        const r = rewriteReceiver(text, m);
+        if (!r || yieldsFlatValues(r.segments)) continue;
         out.push({
           code: 'DOL004',
           messageId: 'default',
-          range: { line: i, startCol: m.index, endCol: m.index + m[0].length },
+          range: { line: i, startCol: r.start, endCol: m.index + m[0].length },
           applicability: 'safe',
-          fixHint: m[1],
+          fixHint: r.receiver,
         });
       }
     }
@@ -473,8 +564,13 @@ const DOL007: Rule = {
               ? classifyAttr(ctx.index, source.model, attr)
               : null;
           if (kind === 'scalar') continue;
-          // Gate 2 — the chain already spans it.
-          if (isCovered(attr, kind, source)) continue;
+          // Gate 2 — the chain already spans it. A bare `.select_related()`
+          // skips nullable relations, which only the index can tell.
+          const bareSelect =
+            ctx.index && source.model && source.selectRelated.has('*')
+              ? bareSelectLoads(ctx.index, source.model, attr)
+              : null;
+          if (isCovered(attr, kind, source, bareSelect)) continue;
           out.push({
             code: 'DOL007',
             messageId: 'default',

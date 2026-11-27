@@ -1,4 +1,5 @@
-"""CI-facing output formats — SARIF 2.1.0 and GitHub workflow commands.
+"""CI-facing output formats — SARIF 2.1.0, GitHub workflow commands and
+GitLab Code Quality reports.
 
 Why a dedicated module
 ----------------------
@@ -14,13 +15,17 @@ platforms render natively:
 * ``github`` — GitHub Actions workflow commands
   (``::warning file=F,line=N::msg``). Zero-permission PR annotations: no
   upload step, no ``security-events: write`` scope — print and done.
+* ``gitlab`` — a GitLab Code Quality report (the CodeClimate subset GitLab
+  reads from ``artifacts:reports:codequality``). Findings show up in the
+  merge request widget and the pipeline's Code Quality tab.
 
-Both are pure functions over the analyzer dataclasses (no filesystem, no
+All are pure functions over the analyzer dataclasses (no filesystem, no
 network) so they stay unit-testable and reusable from the MCP layer later.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -43,6 +48,9 @@ _CONFIDENCE_LEVEL = {"high": "warning", "medium": "note"}
 # same mappings for workflow commands (GitHub calls "note" "notice")
 _SEVERITY_CMD = {"critical": "error", "warning": "warning", "info": "notice"}
 _CONFIDENCE_CMD = {"high": "warning", "medium": "notice"}
+# GitLab Code Quality severities: info | minor | major | critical | blocker
+_SEVERITY_GITLAB = {"critical": "critical", "warning": "major", "info": "info"}
+_CONFIDENCE_GITLAB = {"high": "major", "medium": "minor"}
 
 
 def _checkout_relative(path: Path) -> str | None:
@@ -291,3 +299,106 @@ def blast_radius_github(report: Any, root: str | None = None) -> str:
             f"title={_esc_prop('orm-lens: ' + r.rule)}::{_esc_data(msg)}"
         )
     return "\n".join(lines)
+
+
+def _gitlab_issue(
+    check_name: str, description: str, severity: str, path: str, line: int,
+    key: tuple[str, ...], seen: dict[str, int],
+) -> dict[str, Any]:
+    """One Code Quality entry.
+
+    The fingerprint is how GitLab matches a finding between the source and
+    target branch of a merge request, so it leaves the line number out: a
+    finding that only moved because lines were added above it is not new.
+    Two findings with the same key in one report get an occurrence index so
+    they stay distinct.
+    """
+    base = "".join((check_name, path, *key))
+    n = seen.get(base, 0)
+    seen[base] = n + 1
+    digest = hashlib.md5(f"{base}{n}".encode(), usedforsecurity=False)
+    return {
+        "description": description,
+        "check_name": check_name,
+        "fingerprint": digest.hexdigest(),
+        "severity": severity,
+        # GitLab wants a repository-relative path without a leading "./".
+        "location": {
+            "path": path.removeprefix("./"),
+            "lines": {"begin": max(1, int(line or 1))},
+        },
+    }
+
+
+def nplusone_gitlab(
+    findings: Iterable[NPlusOneFinding], root: str | None = None
+) -> list[dict[str, Any]]:
+    """GitLab Code Quality report for ``orm-lens nplusone`` findings."""
+    seen: dict[str, int] = {}
+    return [
+        _gitlab_issue(
+            "orm-lens/nplusone",
+            _nplusone_message(f),
+            _CONFIDENCE_GITLAB.get(f.confidence, "minor"),
+            _nplusone_path(root, f.file),
+            f.line,
+            (f.loop_var, f.queryset_var, ",".join(sorted(f.accessed))),
+            seen,
+        )
+        for f in findings
+    ]
+
+
+def _risk_gitlab(
+    r: MigrationRisk, path: str, description: str, seen: dict[str, int]
+) -> dict[str, Any]:
+    return _gitlab_issue(
+        f"orm-lens/{r.rule}",
+        description,
+        _SEVERITY_GITLAB.get(r.severity, "major"),
+        path,
+        r.line_number,
+        (r.app, r.migration, r.operation, r.model or "", r.field or ""),
+        seen,
+    )
+
+
+def migration_risks_gitlab(
+    findings: Iterable[MigrationRisk], root: str | None = None
+) -> list[dict[str, Any]]:
+    """GitLab Code Quality report for ``orm-lens migration-risk`` findings."""
+    seen: dict[str, int] = {}
+    return [
+        _risk_gitlab(
+            f,
+            _rel_posix(root, f.file_path),
+            f"{f.description} Mitigation: {f.mitigation}",
+            seen,
+        )
+        for f in findings
+    ]
+
+
+def blast_radius_gitlab(report: Any, root: str | None = None) -> list[dict[str, Any]]:
+    """GitLab Code Quality report for a blast-radius report.
+
+    Same placement as :func:`blast_radius_github`: each entry sits on the
+    migration line, with the count of ``certain`` references still in the
+    codebase folded into the description.
+    """
+    seen: dict[str, int] = {}
+    issues = []
+    for target in report.targets:
+        certain = target.impact_counts()["certain"]
+        for r in target.risks:
+            msg = f"{r.description} Mitigation: {r.mitigation}"
+            if certain:
+                msg = (
+                    f"{msg} Blast radius: {certain} certain reference(s) to "
+                    f"{target.label} still in the codebase."
+                )
+            issues.append(_risk_gitlab(r, _rel_posix(root, r.file_path), msg, seen))
+    for r in report.unscanned_risks:
+        msg = f"{r.description} Mitigation: {r.mitigation}"
+        issues.append(_risk_gitlab(r, _rel_posix(root, r.file_path), msg, seen))
+    return issues

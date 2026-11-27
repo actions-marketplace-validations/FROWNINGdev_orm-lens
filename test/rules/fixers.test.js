@@ -32,6 +32,21 @@ test('findFixersForCode returns fixer by code', () => {
   assert.equal(fixers[0].code, 'DOL001');
 });
 
+test('DOL002 and DOL003 fixes keep a multi-call chain valid', () => {
+  const { querysetRules } = require('../../out/rules/queryset');
+  const chain = 'Order.objects.filter(user=user).order_by("-id")';
+  for (const [code, line] of [
+    ['DOL002', `if ${chain}.count() == 0:`],
+    ['DOL003', `if ${chain}.first() is None:`],
+  ]) {
+    const rule = querysetRules.find((r) => r.meta.code === code);
+    const [finding] = rule.check({ lineCount: 1, lineAt: () => line });
+    const [edit] = findFixersForCode(code)[0].build({ finding, document: docWithLine(line) });
+    const fixed = line.slice(0, edit.startCol) + edit.newText + line.slice(edit.endCol);
+    assert.equal(fixed, `if not ${chain}.exists():`, line);
+  }
+});
+
 test('findFixersForCode returns empty for unknown code', () => {
   assert.equal(findFixersForCode('DOL999').length, 0);
 });

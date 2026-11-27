@@ -156,6 +156,65 @@ test('DOL004 flags qs.first() is not None', () => {
   assert.equal(findings[0].fixHint, 'Book.objects');
 });
 
+// The patterns only see the calls after the last nested or repeated call, so
+// these used to match from `order_by`: the DOL002/DOL003 fix then wrote
+// `Order.objects.filter(user=user).not order_by("-id").exists()`.
+test('DOL001-DOL004 take the whole chain as the receiver', () => {
+  const chains = [
+    'Order.objects.filter(user=user).order_by("-id")',
+    'Order.objects.filter(created__lte=now(), note="a.b(c)").order_by("-id")',
+    'self.orders.filter(Q(a=1) | Q(b=2)).order_by("id")',
+  ];
+  for (const chain of chains) {
+    for (const [code, line] of [
+      ['DOL001', `if ${chain}.count() > 0:`],
+      ['DOL002', `if ${chain}.count() == 0:`],
+      ['DOL003', `if ${chain}.first() is None:`],
+      ['DOL004', `if ${chain}.first() is not None:`],
+    ]) {
+      const findings = ruleByCode(code).check(makeCtx(line));
+      assert.equal(findings.length, 1, line);
+      assert.equal(findings[0].fixHint, chain, line);
+      assert.equal(findings[0].range.startCol, 3, line);
+    }
+  }
+});
+
+test('DOL001-DOL004 skip a multi-call chain that is an operand of an operator', () => {
+  for (const [code, line] of [
+    ['DOL001', 'if capacity - Event.objects.filter(open=True).order_by("id").count() > 0:'],
+    ['DOL002', 'if a.count() + Event.objects.filter(open=True).order_by("id").count() == 0:'],
+    ['DOL003', 'if prev == Event.objects.filter(open=True).order_by("id").first() is None:'],
+    ['DOL004', 'if prev == Event.objects.filter(open=True).order_by("id").first() is not None:'],
+  ]) {
+    assert.equal(ruleByCode(code).check(makeCtx(line)).length, 0, line);
+  }
+});
+
+// `.first()` on a flat values_list returns the first value, which is None when
+// that row holds NULL, while `.exists()` is still True.
+test('DOL003 and DOL004 skip a flat values_list', () => {
+  for (const [code, line] of [
+    ['DOL003', 'if Order.objects.values_list("note", flat=True).first() is None:'],
+    ['DOL004', 'if Order.objects.values_list("note", flat=True).first() is not None:'],
+    ['DOL003', 'if qs.filter(user=u).values_list("note", flat=True).order_by("id").first() is None:'],
+    ['DOL004', 'if qs.values_list("note", flat=as_values).first() is not None:'],
+  ]) {
+    assert.equal(ruleByCode(code).check(makeCtx(line)).length, 0, line);
+  }
+});
+
+test('DOL003 and DOL004 still flag rows that cannot be None', () => {
+  for (const [code, line] of [
+    ['DOL003', 'if Order.objects.values_list("id", "note").first() is None:'],
+    ['DOL004', 'if Order.objects.values_list("note", flat=False).first() is not None:'],
+    ['DOL003', 'if Order.objects.values("note").first() is None:'],
+    ['DOL003', 'if Order.objects.filter(id__in=Other.objects.values_list("id", flat=True)).order_by("id").first() is None:'],
+  ]) {
+    assert.equal(ruleByCode(code).check(makeCtx(line)).length, 1, line);
+  }
+});
+
 test('DOL005 flags .filter().exclude() chain as a hint', () => {
   const rule = ruleByCode('DOL005');
   const findings = rule.check(

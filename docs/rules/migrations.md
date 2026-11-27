@@ -96,7 +96,7 @@ A plain `AddIndex` takes a SHARE lock on Postgres for the index build and, in an
 
 **Operation:** `AlterField` · **Severity:** warning · **Confidence:** medium
 
-Alters a column to `CharField(max_length=N)`. If this narrows the column, rows longer than N characters make the migration fail; either way Postgres may rewrite the table under an ACCESS EXCLUSIVE lock.
+Alters a column to `CharField(max_length=N)`, or to a subclass of it (`SlugField`, `EmailField`, `URLField`, or a project field whose name ends in one of these). If this narrows the column, rows longer than N characters make the migration fail; either way Postgres may rewrite the table under an ACCESS EXCLUSIVE lock.
 
 **Mitigation:** Verify no existing row exceeds the new length. Use `ALTER TABLE ... ALTER COLUMN ... TYPE` with `USING` and run out of hours if the table is large.
 

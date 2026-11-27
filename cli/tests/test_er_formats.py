@@ -256,6 +256,27 @@ class SyntheticSchemaTest(unittest.TestCase):
         dot = build_dot(idx)
         self.assertIn("product → sku / ForeignKey / PROTECT", dot)
 
+    def test_d2_quotes_reserved_keywords(self) -> None:
+        """D2 reads ``width: IntegerField`` as the table's width, not as a
+        column; reserved names must be quoted to stay rows and edge ends."""
+        idx = self._index_for(
+            "from django.db import models\n"
+            "class Label(models.Model):\n"
+            "    label = models.CharField(max_length=64, primary_key=True)\n"
+            "class Image(models.Model):\n"
+            "    width = models.IntegerField()\n"
+            "    height = models.IntegerField()\n"
+            "    title = models.CharField(max_length=64)\n"
+            "    link = models.ForeignKey(Label, on_delete=models.CASCADE)\n"
+        )
+        d2 = build_d2(idx)
+        self.assertIn('blog."Label": {\n  shape: sql_table\n', d2)
+        self.assertIn('  "label": CharField {constraint: primary_key}', d2)
+        self.assertIn('  "width": IntegerField\n  "height": IntegerField\n', d2)
+        self.assertIn("  title: CharField\n", d2)
+        self.assertIn('  "link": ForeignKey {constraint: foreign_key}', d2)
+        self.assertIn('blog.Image."link" -> blog."Label"."label"', d2)
+
 
 class MermaidSameNameModelsTest(unittest.TestCase):
     """Two apps defining the same class name stay two Mermaid entities (#223)."""

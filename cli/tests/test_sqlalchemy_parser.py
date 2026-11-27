@@ -629,3 +629,16 @@ def test_composite_constraint_preserves_column_types_and_primary_keys_in_every_f
     assert '<B>order_id</B></TD><TD>Integer · PK · FK</TD>' in dot
     assert dot.count('<B>tenant_id</B></TD><TD>Integer · PK</TD>') == 2
     assert "ForeignKey · FK" not in dot
+
+
+def test_mermaid_draws_sqlalchemy_foreign_key_columns() -> None:
+    models = list(_models(("app/models.py", COMPOSITE_FK)).values())
+    index = WorkspaceIndex(apps=[ParsedApp(name="app", path="app", models=models)])
+    mermaid = _build_mermaid(index)
+    assert "  OrderLine {\n    Integer order_id\n    Integer tenant_id\n  }" in mermaid
+
+    models = list(_models(("app/models.py", MODERN)).values())
+    index = WorkspaceIndex(apps=[ParsedApp(name="app", path="app", models=models)])
+    mermaid = _build_mermaid(index)
+    assert "    Integer user_id" in mermaid
+    assert "addresses" not in mermaid  # a relationship() is still not a column

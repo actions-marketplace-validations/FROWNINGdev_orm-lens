@@ -34,6 +34,7 @@ pyproject.toml
 smithery.yaml
 glama.json
 action.yml
+templates/**
 Dockerfile
 .pre-commit-hooks.yaml
 *.egg-info/**

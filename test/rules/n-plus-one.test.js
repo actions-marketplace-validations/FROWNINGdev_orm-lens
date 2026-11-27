@@ -208,7 +208,7 @@ test('DOL007 leaves a reverse manager alone once prefetched', () => {
   assert.equal(rule.check(makeCtx(src, REPORTER_INDEX)).length, 0);
 });
 
-test('DOL007 treats a bare .select_related() as spanning every FK', () => {
+test('DOL007 treats a bare .select_related() as spanning a non-null FK', () => {
   const rule = ruleByCode('DOL007');
   const src = [
     '    memberships = Membership.objects.select_related()',
@@ -216,6 +216,72 @@ test('DOL007 treats a bare .select_related() as spanning every FK', () => {
     '        print(m.user)',
   ].join('\n');
   assert.equal(rule.check(makeCtx(src, REPORTER_INDEX)).length, 0);
+});
+
+/**
+ * Django's no-argument `select_related()` follows only non-null forward
+ * relations: `Order.objects.select_related()` joins `customer` but loads
+ * `coupon` (null=True) and the reverse one-to-one `receipt` with a query per
+ * row.
+ */
+const ORDER_INDEX = {
+  scannedAt: 0,
+  apps: [
+    {
+      name: 'core',
+      path: 'core',
+      models: [
+        model('Order', [
+          fk('customer', 'Customer', { args: 'Customer, on_delete=models.CASCADE' }),
+          fk('coupon', 'Coupon', { args: 'Coupon, on_delete=models.SET_NULL, null=True' }),
+          field('note', 'CharField'),
+        ]),
+        model('Customer', [field('name', 'CharField')]),
+        model('Coupon', [field('code', 'CharField')]),
+        model('Receipt', [
+          field('order', 'OneToOneField', {
+            isRelation: true,
+            relationKind: 'OneToOneField',
+            relatedModel: 'Order',
+            relatedName: 'receipt',
+            args: 'Order, on_delete=models.CASCADE, related_name="receipt"',
+          }),
+        ]),
+      ],
+    },
+  ],
+};
+
+function orderLoop(chain, attr) {
+  return [`    orders = Order.objects.${chain}`, '    for o in orders:', `        print(o.${attr})`].join('\n');
+}
+
+test('DOL007 reports a nullable FK or a reverse one-to-one under a bare .select_related()', () => {
+  const rule = ruleByCode('DOL007');
+  for (const attr of ['coupon', 'receipt']) {
+    const findings = rule.check(makeCtx(orderLoop('select_related()', attr), ORDER_INDEX));
+    assert.equal(findings.length, 1, attr);
+    assert.equal(findings[0].fixHint, attr);
+  }
+});
+
+test('DOL007 leaves a non-null FK or a named nullable relation alone', () => {
+  const rule = ruleByCode('DOL007');
+  for (const [chain, attr] of [
+    ['select_related()', 'customer'],
+    ['select_related("coupon")', 'coupon'],
+    ['select_related("receipt")', 'receipt'],
+    ['select_related().prefetch_related("coupon")', 'coupon'],
+  ]) {
+    assert.equal(rule.check(makeCtx(orderLoop(chain, attr), ORDER_INDEX)).length, 0, `${chain} ${attr}`);
+  }
+});
+
+test('DOL007 keeps a bare .select_related() covering every relation without an index', () => {
+  const rule = ruleByCode('DOL007');
+  for (const attr of ['coupon', 'receipt']) {
+    assert.equal(rule.check(makeCtx(orderLoop('select_related()', attr))).length, 0, attr);
+  }
 });
 
 test('DOL007 keeps its schema-free behaviour when the model is unknown', () => {

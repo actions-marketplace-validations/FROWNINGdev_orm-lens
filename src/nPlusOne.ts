@@ -22,9 +22,10 @@
  * Gate 2 (already covered by the chain) needs no schema at all — it is pure
  * string matching against `.select_related(...)` arguments — so it applies
  * even on a cold start, and on its own it fixes the case where the rule
- * contradicts code that has already taken its advice. Gate 1 (scalar) needs
- * the workspace index and stays off without one. That split is why this is
- * not a single `if (index)` branch.
+ * contradicts code that has already taken its advice. The index only narrows
+ * what a bare `.select_related()` covers, since Django skips nullable
+ * relations there. Gate 1 (scalar) needs the workspace index and stays off
+ * without one. That split is why this is not a single `if (index)` branch.
  */
 
 import { ParsedField, ParsedModel, WorkspaceIndex } from './types';
@@ -335,19 +336,47 @@ export function classifyAttr(
   return 'scalar';
 }
 
+const RE_NULL_TRUE = /\bnull\s*=\s*True\b/;
+
+/**
+ * Does a no-argument `.select_related()` load `attr` of `modelName`?
+ *
+ * Django follows only the non-null ForeignKey and OneToOneField declared on
+ * the model. A nullable one and the reverse side of a one-to-one load with a
+ * query per row unless they are named. Returns `null` when the model is not
+ * in the index, so the wildcard still covers every relation, as on a cold
+ * start. Mirrors `NPlusOneScanner._bare_select_loads` in the CLI.
+ */
+export function bareSelectLoads(
+  index: WorkspaceIndex,
+  modelName: string,
+  attr: string,
+): boolean | null {
+  const model = findModel(index, modelName);
+  if (!model) return null;
+  const f = [...model.fields, ...model.inheritedFields].find((x) => x.name === attr);
+  if (!f || !f.isRelation) return false;
+  if (f.relationKind !== 'ForeignKey' && f.relationKind !== 'OneToOneField') return false;
+  return !RE_NULL_TRUE.test(f.args);
+}
+
 /**
  * True when `attr` of kind `kind` is already spanned by the chain, so
  * reporting it would contradict code that has taken the rule's advice.
  *
  * Schema-free on purpose: with no index `kind` is `null` and the lookup is
  * checked against both sets, which is enough to clear case 2 on a cold start.
+ * `bareSelect` says whether a no-argument `.select_related()` loads `attr`
+ * (see {@link bareSelectLoads}); `null` keeps the wildcard covering it.
  */
 export function isCovered(
   attr: string,
   kind: AccessKind | null,
   source: LoopSource,
+  bareSelect: boolean | null = null,
 ): boolean {
-  const inSelect = source.selectRelated.has('*') || source.selectRelated.has(attr);
+  const inSelect =
+    source.selectRelated.has(attr) || (source.selectRelated.has('*') && bareSelect !== false);
   const inPrefetch = source.prefetchRelated.has('*') || source.prefetchRelated.has(attr);
   // A single-valued relation is loaded by either clause.
   if (kind === 'fk' || kind === 'o2o' || kind === 'reverse_o2o') return inSelect || inPrefetch;

@@ -1005,6 +1005,7 @@ def _collect_defs(
 
             is_mptt_meta = line_indent == indent and bool(re.match(r"class\s+MPTTMeta\b", stripped))
             if not cond_stack and (rx["META_START_RE"].match(inner) or is_mptt_meta):
+                meta_items = _inline_meta_items(stripped)
                 k = j + 1
                 while k < len(lines):
                     if k in in_string:
@@ -1016,18 +1017,19 @@ def _collect_defs(
                     m2 = rx["META_ITEM_RE"].match(ml)
                     if m2:
                         value, k = _read_meta_value(lines, k, m2.group(2))
-                        key = m2.group(1)
-                        if not is_mptt_meta:
-                            model.meta[key] = value
-                        elif key in _MPTT_FIELD_DEFAULTS:
-                            try:
-                                field_name = ast.literal_eval(value)
-                            except (ValueError, SyntaxError):
-                                field_name = None
-                            model.mptt_field_names[key] = (
-                                field_name if isinstance(field_name, str) and field_name else None
-                            )
+                        meta_items.append((m2.group(1), value))
                     k += 1
+                for key, value in meta_items:
+                    if not is_mptt_meta:
+                        model.meta[key] = value
+                    elif key in _MPTT_FIELD_DEFAULTS:
+                        try:
+                            field_name = ast.literal_eval(value)
+                        except (ValueError, SyntaxError):
+                            field_name = None
+                        model.mptt_field_names[key] = (
+                            field_name if isinstance(field_name, str) and field_name else None
+                        )
                 j = k
                 continue
 
@@ -1221,6 +1223,41 @@ def _nested_abstract_defs(
             f"{outer}.{name}" for _, name in bound if f"{outer}.{name}" not in kept
         )
     return out
+
+
+# ``class Meta: abstract = True`` keeps its options on the header line.
+_INLINE_CLASS_BODY_RE = re.compile(r"^class\s+\w+\s*(?:\([^)]*\))?\s*:(.*)$")
+
+
+def _inline_meta_items(header: str) -> list[tuple[str, str]]:
+    """Options written on the ``class Meta:`` line itself, as ``(name, source)``.
+
+    ``class Meta: abstract = True`` is valid Python, but only the lines below
+    the header were read, so such a base came out as a concrete model without
+    its fields reaching the subclasses. The text after the colon is a simple
+    statement list; text that does not parse on its own (a value continued on
+    the next line) is left alone, as before.
+    """
+    match = _INLINE_CLASS_BODY_RE.match(header)
+    body = match.group(1).strip() if match else ""
+    if not body:
+        return []
+    try:
+        tree = ast.parse(body)
+    except SyntaxError:
+        return []
+    items: list[tuple[str, str]] = []
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        else:
+            continue
+        source = ast.get_source_segment(body, value)
+        if isinstance(target, ast.Name) and source is not None:
+            items.append((target.id, source))
+    return items
 
 
 def _read_meta_value(
@@ -1465,6 +1502,34 @@ _PERMISSIONS_MIXIN = (
     _auth_m2m("user_permissions", "auth.Permission"),
 )
 
+_THIRD_PARTY_BASE_FIELDS: dict[tuple[str, str], tuple[ParsedField, ...]] = {
+    ("treebeard.mp_tree", "MP_Node"): (
+        _django_field("path", "CharField", "max_length=255, unique=True", "MP_Node"),
+        _django_field("depth", "PositiveIntegerField", "", "MP_Node"),
+        _django_field("numchild", "PositiveIntegerField", "default=0", "MP_Node"),
+    ),
+    ("treebeard.ns_tree", "NS_Node"): (
+        _django_field("lft", "PositiveIntegerField", "db_index=True", "NS_Node"),
+        _django_field("rgt", "PositiveIntegerField", "db_index=True", "NS_Node"),
+        _django_field("tree_id", "PositiveIntegerField", "db_index=True", "NS_Node"),
+        _django_field("depth", "PositiveIntegerField", "db_index=True", "NS_Node"),
+    ),
+    ("tree_queries.models", "TreeNode"): (
+        ParsedField(
+            name="parent",
+            type="ForeignKey",
+            args='"self", blank=True, null=True, on_delete=models.CASCADE, related_name="children"',
+            is_relation=True,
+            line_number=0,
+            related_model="self",
+            relation_kind="ForeignKey",
+            related_name="children",
+            on_delete="CASCADE",
+            inherited_from="TreeNode",
+        ),
+    ),
+}
+
 # Fields of django.contrib.auth's abstract bases, which live in site-packages
 # where a workspace scan never looks. ``is_active`` on AbstractBaseUser is a
 # plain class attribute, not a field. ``TimeStampedModel`` declares
@@ -1526,6 +1591,7 @@ def _abstract_bases_fields(
     model_path = Path(model.file_path)
     for base in model.base_classes:
         is_mptt_base = False
+        third_party: tuple[ParsedField, ...] | None = None
         known, parent = (
             resolver.lookup(model_path, base)
             if resolver is not None
@@ -1538,11 +1604,10 @@ def _abstract_bases_fields(
             # fall back to the name-only pick only for third-party bases.
             if known:
                 continue
-            is_mptt_base = (
-                resolver is not None
-                and resolver.model_root(model_path, base) == ("mptt.models", "MPTTModel")
-            )
-            if not is_mptt_base:
+            root = resolver.model_root(model_path, base) if resolver is not None else None
+            is_mptt_base = root == ("mptt.models", "MPTTModel")
+            third_party = _THIRD_PARTY_BASE_FIELDS.get(root) if root else None
+            if not is_mptt_base and third_party is None:
                 parent = _pick_base(by_name.get(target, []), model)
         elif parent is model or (
             parent.name == model.name and parent.file_path == model.file_path
@@ -1551,6 +1616,8 @@ def _abstract_bases_fields(
         if parent is None:
             if is_mptt_base:
                 contributed = _django_mptt_fields(mptt_names)
+            elif third_party is not None:
+                contributed = [replace(f) for f in third_party]
             else:
                 contributed = [replace(f) for f in DJANGO_ABSTRACT_BASES.get(target, ())]
         elif parent is model or not _is_abstract(parent):

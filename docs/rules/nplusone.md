@@ -10,7 +10,7 @@ The scanner resolves the loop source two ways: inline chains (`for p in Post.obj
 - `p.tags.all()` / `p.tags.filter(...)` / `.exclude` / `.count` / `.exists` — related-manager idiom → needs `prefetch_related`
 - `p.comment_set...` — the `_set` reverse-manager naming → needs `prefetch_related`
 
-Accesses already covered by a `select_related(...)` / `prefetch_related(...)` clause in the chain are not flagged — string arguments are matched by their first lookup segment, a bare `.select_related()` counts as covering every FK, and `Prefetch("lookup", ...)` objects are understood. Each finding includes a rendered `suggested_fix`, e.g. `.select_related("author").prefetch_related("tags")`.
+Accesses already covered by a `select_related(...)` / `prefetch_related(...)` clause in the chain are not flagged — string arguments are matched by their first lookup segment, a bare `.select_related()` counts as covering the non-null foreign keys and one-to-one fields declared on the model (with a schema, a nullable one and the reverse side of a one-to-one are still flagged, because Django does not follow them without names), and `Prefetch("lookup", ...)` objects are understood. Each finding includes a rendered `suggested_fix`, e.g. `.select_related("author").prefetch_related("tags")`.
 
 ## Across functions
 

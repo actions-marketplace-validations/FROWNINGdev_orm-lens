@@ -2,7 +2,7 @@
   "name": "django-orm-lens",
   "displayName": "ORM Lens for Django — ER Diagram, N+1 & Autocomplete",
   "description": "Autocomplete Django model fields and lookups inside .filter(), and see your entire schema in your editor. Live sidebar, ER diagrams, impact analysis, blast radius and schema drift. Static analysis - no DB, no Django boot. Free and MIT, no Pro tier.",
-  "version": "0.22.4",
+  "version": "0.22.5",
   "preview": false,
   "galleryBanner": {
     "color": "#0c4b33",
@@ -337,7 +337,7 @@
     "typescript": "^5.4.0"
   },
   "dependencies": {
-    "@xyflow/react": "^12.12.1",
+    "@xyflow/react": "^13.0.2",
     "elkjs": "^0.12.1",
     "html-to-image": "^1.11.13",
     "react": "^19.3.1",

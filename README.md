@@ -142,7 +142,7 @@ All of it is here, MIT-licensed, with no tier gate, no seat count, no account, a
 
 ### 🤝 Contributors
 
-Most fixes now come from people who found orm-lens through a `good first issue`. Each one is a real wrong answer from a real Django codebase, with a repro, the file to start in and the test to make pass.
+Most fixes now come from people who found orm-lens through a `good first issue`. Each one is a real wrong answer from a real Django codebase, with a repro, the file to start in and the test to make pass. Where they come from: [24 open-source Django projects vs. a static parser](docs/articles/real-django-code-vs-static-parser.md).
 
 <div align="center">
   <a href="https://github.com/FROWNINGdev/orm-lens/graphs/contributors">
@@ -502,7 +502,7 @@ cp -r orm-lens/skills/orm-lens ~/.claude/skills/
 
 ## 🛡️ Gate your CI
 
-Schema regressions are cheapest to catch the moment they enter a PR. Four zero-config ways to block them:
+Schema regressions are cheapest to catch the moment they enter a PR. Five zero-config ways to block them:
 
 **Blast-radius PR bot** — the whole schema review as one comment, updated in place on every push instead of a new comment each time:
 
@@ -538,7 +538,7 @@ The comment goes up **before** the job fails, so a blocked PR still explains why
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/FROWNINGdev/orm-lens
-    rev: py-v1.18.4
+    rev: py-v1.18.5
     hooks:
       - id: orm-lens-nplusone
       - id: orm-lens-migration-risk
@@ -568,6 +568,34 @@ repos:
     sarif_file: lens.sarif
 ```
 
+**GitLab CI → Code Quality** — findings show up in the merge request widget and the pipeline's Code Quality tab. Include a ready-made job from [`templates/`](templates/):
+
+```yaml
+# .gitlab-ci.yml
+include:
+  - remote: https://raw.githubusercontent.com/FROWNINGdev/orm-lens/py-v1.18.5/templates/migration-risk.yml
+    inputs:
+      path: backend            # project root, relative to the repository
+      # severity: warning      # report warnings too; critical findings still fail the job
+  - remote: https://raw.githubusercontent.com/FROWNINGdev/orm-lens/py-v1.18.5/templates/nplusone.yml
+```
+
+Or write the job yourself:
+
+```yaml
+orm-lens:
+  image: python:3.12-slim
+  script:
+    - pip install orm-lens
+    - orm-lens migration-risk --format gitlab > gl-code-quality-report.json
+  artifacts:
+    when: always
+    reports:
+      codequality: gl-code-quality-report.json
+```
+
+`--format gitlab` works for `migration-risk`, `nplusone` and `blast-radius`. Paths are relative to the repository root, and the fingerprint leaves out the line number, so a finding that only moved down the file is not reported as new in the merge request. The files in `templates/` use the GitLab CI/CD component layout (`spec:inputs`), so they work as a component as well as through `include:remote`.
+
 Exit codes are CI-native: `diff` and `nplusone` exit `1` on findings, `migration-risk` and `blast-radius` exit `1` on critical findings, `drift` exits `1` when a field is declared but never migrated. Add `--exit-zero` for report-only mode.
 
 <br/>
@@ -585,6 +613,7 @@ Exit codes are CI-native: `diff` and `nplusone` exit `1` on findings, `migration
 | **Any MCP-compatible client** | point `command` at `orm-lens-mcp`, set `ORM_LENS_ROOT` | ✅ |
 | **pre-commit** | `repo: https://github.com/FROWNINGdev/orm-lens` + two hook ids | ✅ |
 | **GitHub Actions** | `uses: FROWNINGdev/orm-lens@action-v1` — annotations or SARIF | ✅ |
+| **GitLab CI** | `include:` a job from [`templates/`](templates/) — Code Quality report in the merge request | ✅ |
 | **Discoverable via [MCP Registry](https://registry.modelcontextprotocol.io/)** | official Model Context Protocol server directory | ✅ |
 | **Plain terminal / CI** | `pip install orm-lens && orm-lens scan` | ✅ |
 

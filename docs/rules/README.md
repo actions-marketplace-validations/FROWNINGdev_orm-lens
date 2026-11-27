@@ -2,6 +2,7 @@
 
 🌐 [Italiano](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/i18n/rules/it/README.md) — queryset and model rules (`DOL001`–`DOL008`, `DOL011`–`DOL015`)
 🌐 [Tiếng Việt](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/i18n/rules/vi/README.md) — queryset rules (`DOL001`–`DOL007`)
+🌐 [简体中文](https://github.com/FROWNINGdev/orm-lens/blob/main/docs/i18n/rules/zh/README.md) — queryset and datetime rules (`DOL001`–`DOL007`, `DOL021`–`DOL022`)
 
 ORM Lens ships two rule surfaces:
 

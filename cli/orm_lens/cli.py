@@ -31,9 +31,12 @@ from . import __version__
 from .alembic_risk import analyze_alembic_risks
 from .blast_radius import _matches_filter, analyze_blast_radius, format_blast_radius
 from .ci_formats import (
+    blast_radius_gitlab,
     migration_risks_github,
+    migration_risks_gitlab,
     migration_risks_sarif,
     nplusone_github,
+    nplusone_gitlab,
     nplusone_sarif,
 )
 from .diff import diff_schemas, format_diff
@@ -41,6 +44,7 @@ from .drift import LEGEND_LINES as DRIFT_LEGEND_LINES
 from .drift import detect_drift, format_drift
 from .er_formats import ER_BUILDERS
 from .er_formats import _columns as _er_columns
+from .er_formats import _is_column as _er_is_column
 from .formatters import format_hover, format_index, format_model
 from .impact import group_by_layer, scan_impact
 from .migrations_parser import analyze_migration_risks, describe_migration_dependency
@@ -270,6 +274,10 @@ def _cmd_nplusone(args: argparse.Namespace) -> int:
         annotations = nplusone_github(findings, root=args.path)
         if annotations:
             print(annotations)
+    elif args.format == "gitlab":
+        print(json.dumps(
+            nplusone_gitlab(findings, root=args.path), indent=2, ensure_ascii=False
+        ))
     else:
         if not findings:
             print("No N+1 anti-patterns detected.")
@@ -332,6 +340,12 @@ def _cmd_migration_risk(args: argparse.Namespace) -> int:
         annotations = migration_risks_github(findings, root=args.path)
         if annotations:
             print(annotations)
+    elif args.format == "gitlab":
+        print(json.dumps(
+            migration_risks_gitlab(findings, root=args.path),
+            indent=2,
+            ensure_ascii=False,
+        ))
     else:
         if not findings:
             print("No risky migration operations found.")
@@ -586,6 +600,12 @@ def _cmd_blast_radius(args: argparse.Namespace) -> int:
 
     if args.format == "json":
         print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+    elif args.format == "gitlab":
+        print(json.dumps(
+            blast_radius_gitlab(report, str(Path(args.path).resolve())),
+            indent=2,
+            ensure_ascii=False,
+        ))
     else:
         rendered = format_blast_radius(report, args.format, args.path)
         if rendered:
@@ -686,7 +706,10 @@ def _build_mermaid(index: WorkspaceIndex) -> str:
         for model in app.models:
             lines.append(f"  {entity(app.name, model.name)} {{")
             for f in _er_columns(model):
-                if f.is_relation:
+                # A SQLAlchemy foreign key is a typed column of the table
+                # (often part of its primary key); only Django relation
+                # fields and relationship() attributes are edges alone.
+                if not _er_is_column(model, f):
                     continue
                 type_safe = "".join(ch for ch in f.type if ch.isalnum())
                 name_safe = safe(f.name)
@@ -829,12 +852,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_scan_flags(npo)
     npo.add_argument(
         "--format", "-f",
-        choices=("text", "json", "sarif", "github"),
+        choices=("text", "json", "sarif", "github", "gitlab"),
         default="text",
         help=(
             "Output format. 'sarif' emits SARIF 2.1.0 for GitHub Code "
             "Scanning; 'github' emits ::warning workflow commands for "
-            "zero-setup PR annotations"
+            "zero-setup PR annotations; 'gitlab' emits a GitLab Code "
+            "Quality report for artifacts:reports:codequality"
         ),
     )
     npo.add_argument(
@@ -869,12 +893,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_scan_flags(mrisk)
     mrisk.add_argument(
         "--format", "-f",
-        choices=("text", "json", "sarif", "github"),
+        choices=("text", "json", "sarif", "github", "gitlab"),
         default="text",
         help=(
             "Output format. 'sarif' emits SARIF 2.1.0 for GitHub Code "
             "Scanning; 'github' emits ::error/::warning workflow commands "
-            "for zero-setup PR annotations"
+            "for zero-setup PR annotations; 'gitlab' emits a GitLab Code "
+            "Quality report for artifacts:reports:codequality"
         ),
     )
     mrisk.add_argument(
@@ -1000,11 +1025,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_scan_flags(blast)
     blast.add_argument(
         "--format", "-f",
-        choices=("text", "json", "markdown", "github"),
+        choices=("text", "json", "markdown", "github", "gitlab"),
         default="text",
         help=(
             "Output format. 'markdown' is a ready-to-post PR comment; "
-            "'github' emits ::error/::warning workflow commands"
+            "'github' emits ::error/::warning workflow commands; 'gitlab' "
+            "emits a GitLab Code Quality report"
         ),
     )
     blast.add_argument(

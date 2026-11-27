@@ -544,6 +544,59 @@ class AlterFieldTest(unittest.TestCase):
             findings = analyze_migration_risks(tmp, current_schema=_empty_schema())
             self.assertIn("alter_field_char_length", _by_rule(findings))
 
+    def test_char_field_subclass_length_change_flagged(self) -> None:
+        """SlugField, EmailField and URLField are varchar columns too, and a
+        project's own CharField subclass keeps the name."""
+        for field in (
+            "models.SlugField(max_length=8)",
+            "models.EmailField(max_length=100)",
+            "models.URLField(max_length=120)",
+            "myapp.fields.LowercaseCharField(max_length=8)",
+        ):
+            with self.subTest(field=field), TemporaryDirectory() as tmp:
+                app = Path(tmp) / "orders"
+                _write(
+                    app, "0001_initial",
+                    "from django.db import migrations\n"
+                    "class Migration(migrations.Migration):\n"
+                    "    dependencies = []\n    operations = []\n",
+                )
+                _write(
+                    app, "0002_shrink",
+                    "from django.db import migrations, models\n"
+                    "class Migration(migrations.Migration):\n"
+                    "    dependencies = [('orders', '0001_initial')]\n"
+                    "    operations = [migrations.AlterField(model_name='order',\n"
+                    f"        name='code', field={field})]\n",
+                )
+                findings = analyze_migration_risks(tmp, current_schema=_empty_schema())
+                self.assertEqual(
+                    [f.rule for f in findings], ["alter_field_char_length"]
+                )
+                type_name = field.split("(")[0].rsplit(".", 1)[-1]
+                self.assertIn(f"to {type_name}(max_length=", findings[0].description)
+
+    def test_text_field_max_length_is_not_flagged(self) -> None:
+        """TextField's max_length only limits the form widget, not the column."""
+        with TemporaryDirectory() as tmp:
+            app = Path(tmp) / "orders"
+            _write(
+                app, "0001_initial",
+                "from django.db import migrations\n"
+                "class Migration(migrations.Migration):\n"
+                "    dependencies = []\n    operations = []\n",
+            )
+            _write(
+                app, "0002_text",
+                "from django.db import migrations, models\n"
+                "class Migration(migrations.Migration):\n"
+                "    dependencies = [('orders', '0001_initial')]\n"
+                "    operations = [migrations.AlterField(model_name='order',\n"
+                "        name='notes', field=models.TextField(max_length=500))]\n",
+            )
+            findings = analyze_migration_risks(tmp, current_schema=_empty_schema())
+            self.assertNotIn("alter_field_char_length", _by_rule(findings))
+
     def test_int_widening_flagged(self) -> None:
         with TemporaryDirectory() as tmp:
             app = Path(tmp) / "orders"

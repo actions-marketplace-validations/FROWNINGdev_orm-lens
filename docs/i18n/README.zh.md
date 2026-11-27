@@ -407,7 +407,7 @@ orm-lens mcp
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/FROWNINGdev/orm-lens
-    rev: py-v1.18.4
+    rev: py-v1.18.5
     hooks:
       - id: orm-lens-nplusone
       - id: orm-lens-migration-risk
@@ -569,7 +569,7 @@ ORM Lens 处在 **编辑器工具** 与 **AI agent 工具** 的交叉地带 —�
 
 | 类别 | 规则 | 示例 |
 |---|---|---|
-| [Queryset](../rules/README.md) | `DOL001`–`DOL007` | `.count() > 0` → `.exists()`、循环中访问 FK（N+1） |
+| [Queryset](rules/zh/README.md) | [`DOL001`](rules/zh/DOL001.md)–[`DOL007`](rules/zh/DOL007.md) | `.count() > 0` → `.exists()`、循环中访问 FK（N+1） |
 | [模型定义](../rules/README.md) | `DOL011`–`DOL015` | 缺少 `on_delete` 的 `ForeignKey`、字符串字段上的 `null=True` |
 | [日期时间](rules/zh/README.md) | [`DOL021`](rules/zh/DOL021.md) · [`DOL022`](rules/zh/DOL022.md) | `datetime.now()` → `timezone.now()` |
 | [表单 / 视图](../rules/README.md) | `DOL031`–`DOL032` | `render()` 中使用 `locals()`、`Meta.fields = '__all__'` |

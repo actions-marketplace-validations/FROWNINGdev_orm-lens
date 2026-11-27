@@ -614,6 +614,9 @@ _AUTO_NOW_SUFFIXES = ("DateField", "DateTimeField", "TimeField")
 
 _STRING_FIELD_SUFFIXES = ("CharField", "TextField", "SlugField", "EmailField", "URLField")
 
+# The varchar fields: CharField and Django's subclasses of it.
+_CHAR_FIELD_SUFFIXES = ("CharField", "SlugField", "EmailField", "URLField")
+
 
 def _is_string_field(field_call: ast.Call, field_type: str) -> bool:
     """A field that stores text, including project subclasses of one.
@@ -1675,14 +1678,16 @@ class MigrationRiskAnalyzer:
         field_type = _field_type(field_call) or ""
         max_len = _kwarg_literal(field_call, "max_length")
 
-        # Narrowing a CharField is always high-confidence lossy.
-        if field_type == "CharField" and isinstance(max_len, int):
+        # Narrowing a CharField is always high-confidence lossy. SlugField,
+        # EmailField and URLField are CharFields too (a varchar column), and
+        # so are project subclasses named like them.
+        if field_type.endswith(_CHAR_FIELD_SUFFIXES) and isinstance(max_len, int):
             self._add(
                 call,
                 "AlterField",
                 rule="alter_field_char_length",
                 description=(
-                    f"Alters '{model}.{name}' to CharField(max_length="
+                    f"Alters '{model}.{name}' to {field_type}(max_length="
                     f"{max_len}); if this narrows the column, rows longer "
                     f"than {max_len} chars will fail; either way Postgres "
                     f"may rewrite the table under an ACCESS EXCLUSIVE lock."

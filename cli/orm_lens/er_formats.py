@@ -258,6 +258,39 @@ def build_dbml(index: WorkspaceIndex) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Keys D2 reads as an attribute of the shape instead of a child: a column
+# named ``width`` would set the table's width, ``label`` its title. D2 says to
+# quote a reserved keyword to use it as a name
+# (https://d2lang.com/tour/sql-tables), and it matches them in any case.
+_D2_RESERVED = frozenset(
+    {
+        # attributes
+        "label", "desc", "shape", "icon", "constraint", "tooltip", "link",
+        "near", "width", "height", "direction", "top", "left", "grid-rows",
+        "grid-columns", "grid-gap", "vertical-gap", "horizontal-gap",
+        "class", "classes", "vars", "style", "source-arrowhead",
+        "target-arrowhead",
+        # style keywords, only valid under ``style``
+        "opacity", "stroke", "fill", "fill-pattern", "stroke-width",
+        "stroke-dash", "border-radius", "font", "font-size", "font-color",
+        "bold", "italic", "underline", "text-transform", "shadow", "multiple",
+        "double-border", "3d", "animated", "filled",
+        # boards
+        "layers", "scenarios", "steps",
+    }
+)
+
+
+def _d2_key(name: str) -> str:
+    """``name`` as a D2 key, quoted when D2 would read it as a keyword."""
+    return f'"{name}"' if name.lower() in _D2_RESERVED else name
+
+
+def _d2_path(*parts: str) -> str:
+    """Dotted D2 key (``app.Model.field``) with each part made safe."""
+    return ".".join(_d2_key(p) for p in parts)
+
+
 def build_d2(index: WorkspaceIndex) -> str:
     """D2 document with ``sql_table`` shapes — render via ``d2 in.d2 out.svg``.
 
@@ -274,7 +307,7 @@ def build_d2(index: WorkspaceIndex) -> str:
     for app in index.apps:
         for model in app.models:
             pk = _pk_field(model)
-            lines.append(f"{app.name}.{model.name}: {{")
+            lines.append(f"{_d2_path(app.name, model.name)}: {{")
             lines.append("  shape: sql_table")
             if pk is None:
                 lines.append(
@@ -295,11 +328,11 @@ def build_d2(index: WorkspaceIndex) -> str:
                     constraint = f" {{constraint: {constraints[0]}}}"
                 else:
                     constraint = ""
-                lines.append(f"  {f.name}: {f.type}{constraint}")
+                lines.append(f"  {_d2_key(f.name)}: {f.type}{constraint}")
             for f in _columns(model):
                 if not _is_column(model, f):
                     lines.append(
-                        f"  {f.name}: {f.relation_kind or 'ForeignKey'} "
+                        f"  {_d2_key(f.name)}: {f.relation_kind or 'ForeignKey'} "
                         "{constraint: foreign_key}"
                     )
             lines.append("}")
@@ -312,7 +345,9 @@ def build_d2(index: WorkspaceIndex) -> str:
         if e.through:
             label_parts.append(f"through {e.through}")
         label = " · ".join(label_parts)
-        lines.append(f'{e.src}.{e.field} -> {e.target}.{e.target_pk}: "{label}"')
+        src = _d2_path(*e.src.split("."), e.field)
+        target = _d2_path(*e.target.split("."), e.target_pk)
+        lines.append(f'{src} -> {target}: "{label}"')
     return "\n".join(lines).rstrip() + "\n"
 
 

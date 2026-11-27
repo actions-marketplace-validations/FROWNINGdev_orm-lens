@@ -1,0 +1,51 @@
+spec:
+  inputs:
+    stage:
+      default: test
+      description: Pipeline stage for the job.
+    job-name:
+      default: orm-lens-migration-risk
+      description: Name of the job.
+    python-version:
+      default: "3.12"
+      description: Tag of the python image the job runs in (python:<version>-slim).
+    version:
+      default: ""
+      description: orm-lens version to install, for example 1.18.5. Empty installs the latest.
+    path:
+      default: "."
+      description: Project root to scan, relative to the repository root.
+    severity:
+      default: critical
+      options: [critical, warning, info, all]
+      description: Lowest severity to report. The job fails on critical findings either way.
+    args:
+      default: ""
+      description: Extra arguments for orm-lens migration-risk, for example "--only app/migrations/0042_x.py".
+    allow-failure:
+      default: false
+      type: boolean
+      description: Report findings without failing the pipeline.
+---
+"$[[ inputs.job-name ]]":
+  stage: $[[ inputs.stage ]]
+  image: python:$[[ inputs.python-version ]]-slim
+  allow_failure: $[[ inputs.allow-failure ]]
+  script:
+    - |
+      if [ -n "$[[ inputs.version ]]" ]; then
+        pip install --quiet --disable-pip-version-check "orm-lens==$[[ inputs.version ]]"
+      else
+        pip install --quiet --disable-pip-version-check orm-lens
+      fi
+    # One run writes the report and sets the exit code: 1 on critical findings.
+    - status=0
+    - >-
+      orm-lens migration-risk --path "$[[ inputs.path ]]"
+      --severity "$[[ inputs.severity ]]" --format gitlab $[[ inputs.args ]]
+      > gl-code-quality-report.json || status=$?
+    - exit $status
+  artifacts:
+    when: always
+    reports:
+      codequality: gl-code-quality-report.json
